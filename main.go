@@ -6,10 +6,12 @@ package main
 // 高级模式: -platform 从一个 URL 发现其他平台的下载地址。
 
 import (
+	"bufio"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -17,6 +19,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	tlsutil "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 const defaultUserAgent = "Mozilla/5.0 (compatible; ov-prober/1.0)"
@@ -49,8 +54,9 @@ type options struct {
 	verify    bool
 	platform  bool
 	beyond    int
-	forceTpl  bool
-	reverse   bool
+	forceTpl      bool
+	reverse       bool
+	tlsFingerprint string // TLS 指纹伪装: chrome、firefox、ios 等
 }
 
 func parseFlags() *options {
@@ -62,7 +68,7 @@ func parseFlags() *options {
 	flag.StringVar(&o.strategy, "strategy", "smart", "探测策略: smart(前沿生长, 默认)|exhaust(全量枚举到 -to)")
 	flag.IntVar(&o.universe, "universe", 199, "版本分量最大值 0..universe(=200 个取值)")
 	flag.IntVar(&o.frontStop, "front-stop", 5, "向上前沿探测中连续未命中多少次即停止")
-	flag.IntVar(&o.stop, "stop", 10, "滚动窗口: 连续未发现可下载版本多少次即停止(命中即刷新窗口)")
+	flag.IntVar(&o.stop, "stop", 200, "滚动窗口: 连续未发现可下载版本多少次即停止(命中即刷新窗口)")
 	flag.IntVar(&o.conc, "c", 50, "并发数")
 	flag.DurationVar(&o.timeout, "timeout", 10*time.Second, "单请求超时")
 	flag.IntVar(&o.retry, "retry", 1, "网络错误/429/5xx 的额外重试次数")
@@ -79,6 +85,7 @@ func parseFlags() *options {
 	flag.IntVar(&o.beyond, "beyond", 3, "历史区探测到已知版本之后(更新)的版本数量, 0 表示只到已知版本")
 	flag.BoolVar(&o.forceTpl, "force-tpl", false, "跳过不可遍历检查, 强制按模板探测(可用于已含 {v} 的地址)")
 	flag.BoolVar(&o.reverse, "reverse", false, "结果按版本语义降序输出(从新到旧), 默认升序(从早到晚)")
+	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等(默认原生)")
 	flag.Parse()
 	return o
 }
@@ -105,6 +112,7 @@ URL 中多个版本号会同时替换; 带签名/随机串的 URL 会提示不�
   ov -mode num "https://app-download.xaminim.com/xingye-android-release/754/xingye.apk"
   ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
   ov -verify "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg?download_id=xxx"
+  ov -tls-fingerprint chrome "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
 
 选项:
 `)
@@ -114,6 +122,127 @@ URL 中多个版本号会同时替换; 带签名/随机串的 URL 会提示不�
 func fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "错误: "+format+"\n", a...)
 	os.Exit(2)
+}
+
+// utlsRoundTripper 对 http.RoundTripper 的 uTLS 实现:
+// 替代标准库的 http.Transport, 在 TLS 握手阶段使用指定指纹。
+type utlsRoundTripper struct {
+	helloID tlsutil.ClientHelloID
+	skipTLS bool
+}
+
+func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := req.URL.Hostname()
+	port := req.URL.Port()
+	if port == "" {
+		if req.URL.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	addr := net.JoinHostPort(host, port)
+
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConfig := &tlsutil.Config{
+		ServerName:         host,
+		InsecureSkipVerify: r.skipTLS,
+		NextProtos:         []string{"h2", "http/1.1"},
+	}
+	uconn := tlsutil.UClient(conn, tlsConfig, r.helloID)
+	if err := uconn.Handshake(); err != nil {
+		uconn.Close()
+		return nil, err
+	}
+
+	switch uconn.ConnectionState().NegotiatedProtocol {
+	case "h2":
+		// HTTP/2 over TLS: 用 http2.Transport 包装 uTLS 连接
+		tr2 := &http2.Transport{}
+		cconn, err := tr2.NewClientConn(uconn)
+		if err != nil {
+			uconn.Close()
+			return nil, err
+		}
+		return cconn.RoundTrip(req)
+	default:
+		// HTTP/1.1: 手动写请求再读响应
+		if err := req.Write(uconn); err != nil {
+			uconn.Close()
+			return nil, err
+		}
+		return http.ReadResponse(bufio.NewReader(uconn), req)
+	}
+}
+
+// fingerprints 预定义的 TLS 客户端指纹映射。
+var fingerprints = map[string]tlsutil.ClientHelloID{
+	// Chrome
+	"chrome": tlsutil.HelloChrome_Auto, // = HelloChrome_133
+	"chrome58":  tlsutil.HelloChrome_58,
+	"chrome62":  tlsutil.HelloChrome_62,
+	"chrome70":  tlsutil.HelloChrome_70,
+	"chrome72":  tlsutil.HelloChrome_72,
+	"chrome83":  tlsutil.HelloChrome_83,
+	"chrome87":  tlsutil.HelloChrome_87,
+	"chrome96":  tlsutil.HelloChrome_96,
+	"chrome100": tlsutil.HelloChrome_100,
+	"chrome102": tlsutil.HelloChrome_102,
+	"chrome106": tlsutil.HelloChrome_106_Shuffle,
+	"chrome120": tlsutil.HelloChrome_120,
+	"chrome131": tlsutil.HelloChrome_131,
+	"chrome133": tlsutil.HelloChrome_133,
+	// Firefox
+	"firefox": tlsutil.HelloFirefox_Auto, // = HelloFirefox_120
+	"firefox55":  tlsutil.HelloFirefox_55,
+	"firefox56":  tlsutil.HelloFirefox_56,
+	"firefox63":  tlsutil.HelloFirefox_63,
+	"firefox65":  tlsutil.HelloFirefox_65,
+	"firefox99":  tlsutil.HelloFirefox_99,
+	"firefox102": tlsutil.HelloFirefox_102,
+	"firefox105": tlsutil.HelloFirefox_105,
+	"firefox120": tlsutil.HelloFirefox_120,
+	// iOS
+	"ios": tlsutil.HelloIOS_Auto, // = HelloIOS_14
+	"ios11": tlsutil.HelloIOS_11_1,
+	"ios12": tlsutil.HelloIOS_12_1,
+	"ios13": tlsutil.HelloIOS_13,
+	"ios14": tlsutil.HelloIOS_14,
+	// Android
+	"android": tlsutil.HelloAndroid_11_OkHttp,
+	// Safari / macOS
+	"safari": tlsutil.HelloSafari_Auto, // = HelloSafari_16_0
+	"safari16": tlsutil.HelloSafari_16_0,
+	// Edge
+	"edge": tlsutil.HelloEdge_Auto, // = HelloEdge_85
+	"edge85":  tlsutil.HelloEdge_85,
+	"edge106": tlsutil.HelloEdge_106,
+	// 360
+	"360": tlsutil.Hello360_Auto, // = Hello360_7_5
+	"3607":   tlsutil.Hello360_7_5,
+	"360_11": tlsutil.Hello360_11_0,
+	// QQ
+	"qq": tlsutil.HelloQQ_11_1,
+}
+
+// newUTLSRoundTripper 根据指纹名称返回 http.RoundTripper，不支持时返回 nil。
+func newUTLSRoundTripper(name string, skipTLS bool) http.RoundTripper {
+	if name == "" {
+		return nil
+	}
+	id, ok := fingerprints[name]
+	if !ok {
+		return nil
+	}
+	return &utlsRoundTripper{
+		helloID: id,
+		skipTLS: skipTLS,
+	}
 }
 
 func main() {
@@ -133,16 +262,22 @@ func main() {
 	p := &Prober{modes: newVersionModes(modeSet(o.mode))}
 	strictMagic = o.strict
 
-	hc := &http.Client{
-		Timeout: o.timeout,
-		Transport: &http.Transport{
+	var transport http.RoundTripper
+	if t := newUTLSRoundTripper(o.tlsFingerprint, o.skipTLS); t != nil {
+		transport = t
+	} else {
+		transport = &http.Transport{
 			Proxy:               http.ProxyFromEnvironment,
 			TLSClientConfig:     &tls.Config{InsecureSkipVerify: o.skipTLS}, //nolint:gosec
 			MaxIdleConns:        256,
 			MaxIdleConnsPerHost: 64,
 			IdleConnTimeout:     30 * time.Second,
 			DisableCompression:  true,
-		},
+		}
+	}
+	hc := &http.Client{
+		Timeout:   o.timeout,
+		Transport: transport,
 	}
 
 	if o.verify {

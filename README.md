@@ -120,7 +120,7 @@ kimi mac → windows exe。组合数上限保护（128）。
 | `-mode` | `auto` | 识别模式：auto/std/date/num/alnum，逗号组合 |
 | `-strategy` | `smart` | 探测策略：smart（前沿生长，默认）/exhaust（全量枚举到 -to） |
 | `-universe` | `199` | 版本分量最大值 0..universe（=200 个取值，200×200×200 上限） |
-| `-stop` | `10` | 滚动窗口宽度：连续未命中多少次即停止（命中立即刷新）；候选空间过大时自动触发此模式 |
+| `-stop` | `200` | 滚动窗口宽度：连续未命中多少次即停止（命中立即刷新）；候选空间过大时自动触发此模式 |
 | `-front-stop` | `5` | 前沿探测中连续未命中多少次即停止该维度 |
 | `-from` | `0.0.0` | 起始版本（含） |
 | `-to` | 锚点+beyond | 结束版本（含） |
@@ -135,6 +135,7 @@ kimi mac → windows exe。组合数上限保护（128）。
 | `-o` | stdout | 结果输出文件 |
 | `-reverse` | false | 结果按版本语义降序输出（从新到旧），默认升序（从早到晚） |
 | `-k` | false | 跳过 TLS 证书校验 |
+| `-tls-fingerprint` | (原生) | TLS 指纹伪装：`chrome`/`firefox`/`ios`/`android`/`edge`/`safari` 等，自动支持 HTTP/2 |
 | `-q` | false | 关闭进度输出 |
 | `-verify` | false | 只验证给定 URL 是否可下载 |
 | `-platform` | false | 高级模式：发现其他平台/架构的下载地址 |
