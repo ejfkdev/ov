@@ -1,0 +1,9 @@
+ov
+*.exe
+*.dmg
+*.apk
+*.deb
+*.AppImage
+*.zip
+*.tar.gz
+*.tmp
