@@ -505,7 +505,6 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 
 	// smart 策略: 前沿生长, 从锚点向上发现更多版本。
 	frontierProbed := int64(0)
-	frontierHits := 0
 	if o.strategy == "smart" && len(anchor) > 0 {
 		seeds := make(map[string]bool, len(found))
 		for v := range found {
@@ -519,9 +518,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 		frontierProbed = probed.Load() - int64(len(candidates))
-		frontierHits = len(f.hits)
 	}
-	_ = frontierHits
 
 	// 输出(按版本数值升序, 历史区+前沿区合并)。
 	var out io.Writer = os.Stdout
@@ -547,13 +544,11 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 
 	count := 0
 	for _, v := range keys {
-		if r, ok := found[v]; ok {
-			count++
-			u := strings.ReplaceAll(tpl, "{v}", v)
-			fmt.Fprintln(out, u)
-			if o.sizes {
-				fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
-			}
+		count++
+		u := strings.ReplaceAll(tpl, "{v}", v)
+		fmt.Fprintln(out, u)
+		if o.sizes {
+			fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(found[v].size), found[v].kind)
 		}
 	}
 	if o.strategy == "smart" && len(anchor) > 0 {
@@ -568,10 +563,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	if o.platform {
 		var urls []string
 		for _, v := range keys {
-			if r, ok := found[v]; ok {
-				urls = append(urls, strings.ReplaceAll(tpl, "{v}", v))
-				_ = r
-			}
+			urls = append(urls, strings.ReplaceAll(tpl, "{v}", v))
 		}
 		extra := map[string]bool{}
 		for _, u := range urls {

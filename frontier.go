@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 // frontier 前沿探测器。
@@ -85,7 +84,7 @@ func (f *frontier) probe(comp []int) bool {
 	return false
 }
 
-// abortedProbeCount 返回因预算中止的探测数。
+// isAborted 返回预算是否已耗尽。
 func (f *frontier) isAborted() bool { return f.aborted }
 
 // resetWindow 重置滚动未命中窗口(用于维度切换)。
@@ -106,16 +105,6 @@ func (f *frontier) windowProbe(comp []int) bool {
 		f.windowMiss++
 	}
 	return f.windowMiss < f.o.stop
-}
-
-// oneDimUp 单组件向上滚动: v+1, v+2 ... 到达 v+universe 或窗口停止。
-func (f *frontier) oneDimUp(base int) {
-	hi := base + f.o.universe
-	for v := base + 1; v <= hi && !f.isAborted(); v++ {
-		if !f.windowProbe([]int{v}) {
-			break
-		}
-	}
 }
 
 // scanDown 向下滚动扫描: 从锚点分量递减, 使用滚动窗口语义(连续 -stop 次未命中停止)。
@@ -401,5 +390,3 @@ func lessVersionNatural(a, b string) bool {
 	}
 	return len(ac) < len(bc)
 }
-
-var _ = time.Second
