@@ -162,7 +162,7 @@ func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	switch uconn.ConnectionState().NegotiatedProtocol {
 	case "h2":
-		// HTTP/2 over TLS: 用 http2.Transport 包装 uTLS 连接
+		// HTTP/2 over TLS: 用 http2.Transport 包装 uTLS 连接。
 		tr2 := &http2.Transport{}
 		cconn, err := tr2.NewClientConn(uconn)
 		if err != nil {
@@ -171,7 +171,7 @@ func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 		}
 		return cconn.RoundTrip(req)
 	default:
-		// HTTP/1.1: 手动写请求再读响应
+		// HTTP/1.1: 手动写请求再读响应。
 		if err := req.Write(uconn); err != nil {
 			uconn.Close()
 			return nil, err
