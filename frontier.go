@@ -179,13 +179,95 @@ func (f *frontier) hitExists(v string) bool {
 	return ok
 }
 
-func containsInt(s []int, x int) bool {
-	for _, v := range s {
-		if v == x {
-			return true
+// sparseMajorCandidates 生成"广撒网"的候选主版本号(升序去重):
+//  1. 近锚点稠密: [anchor-D, anchor+D] 每个值;
+//  2. 中程步长 2: 直到 anchor+midBand;
+//  3. 整数倍撒点: 5/10 的倍数(只到 hi 与 midBand 的较小者, 避免覆盖整个 universe);
+//  4. 年份带: 另一套编号体系(2021..2030 或锚点±4), 不受 universe 限制。
+// 整体上限 capCount 个候选, 使"广撒网"成本稳定在几十次而非上千。
+func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]bool) []int {
+	set := map[int]bool{}
+	add := func(m int) {
+		if m >= 0 && m <= hi[0] && !reached[m] {
+			set[m] = true
 		}
 	}
-	return false
+	addAbs := func(m int) {
+		if m >= 0 && m <= 2100 && !reached[m] {
+			set[m] = true
+		}
+	}
+	D := o.frontStop * 2
+	if D < 6 {
+		D = 6
+	}
+	for m := anchor[0] - D; m <= anchor[0]+D; m++ {
+		add(m)
+	}
+	midBand := anchor[0] + D + 25
+	for m := anchor[0] + D + 1; m <= midBand; m += 2 {
+		add(m)
+	}
+	// 整数倍只撒到近端范围, 不覆盖整个 universe。
+	for m := 5; m <= hi[0] && m <= midBand+D; m += 5 {
+		add(m)
+	}
+	for m := 10; m <= hi[0] && m <= midBand+D; m += 10 {
+		add(m)
+	}
+	if !(anchor[0] >= 1900 && anchor[0] <= 2100) {
+		for y := 2021; y <= 2030; y++ {
+			addAbs(y)
+		}
+	} else {
+		for y := anchor[0] - 4; y <= anchor[0]+4; y++ {
+			addAbs(y)
+		}
+	}
+	out := make([]int, 0, len(set))
+	for m := range set {
+		out = append(out, m)
+	}
+	sort.Ints(out)
+	// 候选数硬上限: 保留最靠近锚点的 capCount 个。
+	capCount := 60
+	if len(out) > capCount {
+		// 按 |m - anchor[0]| 排序后截取。
+		sort.Slice(out, func(i, j int) bool {
+			di, dj := out[i]-anchor[0], out[j]-anchor[0]
+			if di < 0 {
+				di = -di
+			}
+			if dj < 0 {
+				dj = -dj
+			}
+			return di < dj
+		})
+		out = out[:capCount]
+		sort.Ints(out)
+	}
+	return out
+}
+
+// majorEntryProbes 为一个主版本 M 构造代表性入口候选 (M, m, p), 命中即认为该主版本存在。
+// 覆盖小 minor/patch 的常见首发布点: X.0.0 / X.0.1 / X.1.0 / X.1.1 / X.2.0。
+func majorEntryProbes(M int, P int, anchor []int) [][]int {
+	shape := [][2]int{{0, 0}, {0, 1}, {1, 0}, {1, 1}, {2, 0}}
+	var out [][]int
+	seen := map[[2]int]bool{}
+	for _, e := range shape {
+		if seen[e] || (P < 3 && e[1] != 0) {
+			continue
+		}
+		seen[e] = true
+		c := make([]int, P)
+		c[0], c[1] = M, e[0]
+		if P >= 3 {
+			c[2] = e[1]
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // sweep 对一组取值(升序或降序皆可)用 build 生成候选, 流水线并发探测,
@@ -352,40 +434,21 @@ func (f *frontier) run(anchor []int) {
 	}
 	majorHits := f.scanDim(buildMajor, anchor[0], f.hi[0], majors)
 
-	// 未来主版本的"入口探测": 有些软件下一个大版本没有 X.0.0, 而是 X.1.0 / X.Y.Z
-	// (年份式 2026->2027.1.0、跳过式 5->6.2.0)。对 anchor 之后尚未命中的每个主版本,
-	// 试探若干代表性入口 (M, m, p), 命中即认为该主版本存在并纳入扫描。
-	// 这样从 5.5.0 也能探到 7.0.1(7 的入口在 patch), 2026.2.1 探到 2027.1.0。
+	// 广撒网(wide net): 稀疏探测一批候选主版本(近锚点稠密 + 远端稀疏撒点 + 年份带),
+	// 每个候选主版本只试几个代表性入口。命中某个主版本即纳入, 后续按主版本稠密展开。
+	// 取代旧的"向上线性连空即停", 使 1.17.9 也能一次撒网探到 3.x / 8 / 10 / 2026 等远处区域,
+	// 而总请求量仅几十到一两百(每候选 2-3 个入口)。
 	if P >= 2 {
 		reached := map[int]bool{}
 		for _, M := range majorHits {
 			reached[M] = true
 		}
-		minorSet := []int{0, 1, 2, 3}
-		if !containsInt(minorSet, anchor[1]) {
-			minorSet = append(minorSet, anchor[1])
+		cands := sparseMajorCandidates(anchor, f.o, f.hi, reached)
+		var probes [][]int
+		for _, M := range cands {
+			probes = append(probes, majorEntryProbes(M, P, anchor)...)
 		}
-		patchSet := []int{0, 1}
-		if P >= 3 && !containsInt(patchSet, anchor[2]) {
-			patchSet = append(patchSet, anchor[2])
-		}
-		emptyRun := 0 // 连续"无任何入口"的未来主版本数, 达 front-stop 即停(避免空扫到 199)
-		for M := anchor[0] + 1; M <= f.hi[0] && !f.isAborted(); M++ {
-			if reached[M] {
-				emptyRun = 0
-				continue
-			}
-			var probes [][]int
-			for _, m := range minorSet {
-				for _, p := range patchSet {
-					c := make([]int, P)
-					c[0], c[1] = M, m
-					if P >= 3 {
-						c[2] = p
-					}
-					probes = append(probes, c)
-				}
-			}
+		if !f.isAborted() {
 			pi := 0
 			f.probeParallel(func() ([]int, bool) {
 				if pi < len(probes) {
@@ -394,22 +457,13 @@ func (f *frontier) run(anchor []int) {
 					return pc, true
 				}
 				return nil, false
-			}, 0) // stop=0: 不因 miss 截断, 跑完该主版本的全部入口
-			found := false
-			for _, pc := range probes {
-				if f.hitExists(f.render(pc)) {
-					majorHits = append(majorHits, M)
-					found = true
-					break
-				}
-			}
-			if found {
-				emptyRun = 0
-			} else {
-				emptyRun++
-				if emptyRun >= f.o.frontStop {
-					break
-				}
+			}, 0) // stop=0: 入口探测互相独立, 不因 miss 截断, 全部撒完
+		}
+		for _, pc := range probes {
+			M := pc[0]
+			if !reached[M] && f.hitExists(f.render(pc)) {
+				majorHits = append(majorHits, M)
+				reached[M] = true
 			}
 		}
 		sort.Ints(majorHits)
