@@ -447,16 +447,29 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	if len(versions) > 0 {
 		fmt.Fprintf(os.Stderr, "识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
 	}
-	fmt.Fprintf(os.Stderr, "探测: %s ~ %s, 历史区 %d 个候选, 并发 %d\n",
-		joinCompsW(from, widths), joinCompsW(to, widths), len(candidates), o.conc)
+	fmt.Fprintf(os.Stderr, "探测: %s ~ %s, 并发 %d\n",
+		joinCompsW(from, widths), joinCompsW(to, widths), o.conc)
 
-	// 并发探测。
+	// 并发探测。worker 持续从 jobs 取候选, 完成一个立刻开始下一个(不分批);
+	// 候选流式喂入。进度仅显示已发出的请求数与命中数, 不显示"预期总数"
+	// (滚动/前沿模式下每命中一个就动态扩展探测范围, 预期数无意义)。
 	start := time.Now()
 	var probed atomic.Int64
+	var hitsFound atomic.Int64
 	found := make(map[string]probeResult)
 	var mu sync.Mutex
+	var progMu sync.Mutex
+	showProg := !o.quiet
+	report := func() {
+		if !showProg {
+			return
+		}
+		progMu.Lock()
+		fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", probed.Load(), hitsFound.Load())
+		progMu.Unlock()
+	}
 
-	jobs := make(chan string, 256)
+	jobs := make(chan string, o.conc*4)
 	var wg sync.WaitGroup
 	for i := 0; i < o.conc; i++ {
 		wg.Add(1)
@@ -465,28 +478,16 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			for v := range jobs {
 				u := strings.ReplaceAll(tpl, "{v}", v)
 				r := probeURLWithQueryFallback(hc, o, u)
+				probed.Add(1)
 				if r.found && (r.size < 0 || r.size >= o.minSize) {
 					mu.Lock()
-					found[v] = r
+					if _, exists := found[v]; !exists {
+						found[v] = r
+						hitsFound.Add(1)
+					}
 					mu.Unlock()
 				}
-				probed.Add(1)
-			}
-		}()
-	}
-
-	done := make(chan struct{})
-	if !o.quiet {
-		go func() {
-			t := time.NewTicker(time.Second)
-			defer t.Stop()
-			for {
-				select {
-				case <-t.C:
-					fmt.Fprintf(os.Stderr, "\r历史区探测中 ... %d/%d", probed.Load(), len(candidates))
-				case <-done:
-					return
-				}
+				report()
 			}
 		}()
 	}
@@ -498,8 +499,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		close(jobs)
 	}()
 	wg.Wait()
-	close(done)
-	if !o.quiet {
+	if showProg {
 		fmt.Fprintln(os.Stderr)
 	}
 
@@ -507,16 +507,20 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	frontierProbed := int64(0)
 	if o.strategy == "smart" && len(anchor) > 0 {
 		seeds := make(map[string]bool, len(found))
+		mu.Lock()
 		for v := range found {
 			seeds[v] = true
 		}
-		f := newFrontier(hc, o, tpl, widths, seeds, &probed, int64(o.max))
+		mu.Unlock()
+		f := newFrontier(hc, o, tpl, widths, seeds, &probed, &hitsFound, int64(o.max))
 		f.run(anchor)
+		mu.Lock()
 		for v, r := range f.hits {
 			if _, exists := found[v]; !exists {
 				found[v] = r
 			}
 		}
+		mu.Unlock()
 		frontierProbed = probed.Load() - int64(len(candidates))
 	}
 
@@ -643,15 +647,13 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 	found := make(map[string]probeResult)
 	var mu sync.Mutex
 	var probed atomic.Int64
+	var hitsFound atomic.Int64
 	start := time.Now()
 
 	// 向下: 从锚点主分量递减。
-	// 注意: scanDown 内部调用 probe -> f.mu.Lock(), 因此这里不加外层锁。
 	func() {
 		P := len(anchor)
-		f := &frontier{hc: hc, o: o, tpl: tpl, widths: widths,
-			hits: found, mu: sync.Mutex{}, probed: &probed,
-			budget: int64(o.max)}
+		f := newFrontier(hc, o, tpl, widths, map[string]bool{}, &probed, &hitsFound, int64(o.max))
 		f.hi = make([]int, P)
 		for i := range f.hi {
 			f.hi[i] = o.universe
@@ -660,11 +662,18 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 		if P == 1 && anchor[0] > o.universe {
 			f.hi[0] = anchor[0] + o.stop*10
 		}
-		f.windowMiss = 0
 		f.scanDown(anchor)
+		// 合并 scanDown 命中到 found。
+		mu.Lock()
+		for v, r := range f.hits {
+			if _, exists := found[v]; !exists {
+				found[v] = r
+			}
+		}
+		mu.Unlock()
 	}()
 
-	// 收集向下扫描的命中(临界区, 但 scanDown 已结束, 安全的读)。
+	// 收集向下扫描的命中(作为前沿生长播种)。
 	mu.Lock()
 	seeds := make(map[string]bool, len(found))
 	for v := range found {
@@ -675,7 +684,7 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 	// 向上: 前沿生长。
 	if len(found) > 0 {
 		var p2 atomic.Int64
-		f := newFrontier(hc, o, tpl, widths, seeds, &p2, int64(o.max))
+		f := newFrontier(hc, o, tpl, widths, seeds, &p2, &hitsFound, int64(o.max))
 		f.run(anchor)
 		mu.Lock()
 		for v, r := range f.hits {

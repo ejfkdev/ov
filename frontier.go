@@ -11,7 +11,9 @@ package main
 //     从已知补丁+1 起线性探测补丁, 连续停止(补丁段通常密集, 命中率高)。
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,19 +32,94 @@ type frontier struct {
 	seeds      map[string]bool // 历史命中版本(播种已知主/次/补丁)
 	hits       map[string]probeResult
 	probed     *atomic.Int64
+	hitsFound  *atomic.Int64 // 全程命中计数(用于实时进度)
 	budget     int64
-	aborted    bool
-	windowMiss int // 滚动窗口: 连续未命中计数(命中刷新)
+	aborted    atomic.Bool // 预算是否耗尽(并发探测下用原子标志)
 	mu         sync.Mutex
 }
 
 func newFrontier(hc *http.Client, o *options, tpl string, widths []int,
-	seeds map[string]bool, probed *atomic.Int64, budget int64) *frontier {
+	seeds map[string]bool, probed *atomic.Int64, hitsFound *atomic.Int64, budget int64) *frontier {
 	return &frontier{
 		hc: hc, o: o, tpl: tpl, ua: o.ua, widths: widths,
 		seeds: seeds, hits: map[string]probeResult{},
-		probed: probed, budget: budget,
+		probed: probed, hitsFound: hitsFound, budget: budget,
 	}
+}
+
+// reportHit 在并发扫描命中新基座时刷新实时进度。
+func (f *frontier) reportHit() {
+	if f.hitsFound == nil {
+		return
+	}
+	f.hitsFound.Add(1)
+	if !f.o.quiet {
+		fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
+	}
+}
+
+// probeParallel 流水线并发探测: gen 按序产出候选, 维持最多 conc 个在途请求,
+// 任一完成立即补充下一个(而非等一整批)。严格按消费顺序做连续 miss 截断,
+// 语义与串行 scanDim 一致: 命中刷新 miss 计数, 连续 stop 个 miss 即停止消费。
+// 返回按发射顺序记录的"是否命中"。stop<=0 表示不按 miss 截断(gen 自行终止)。
+func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
+	limit := f.o.conc
+	if limit < 1 {
+		limit = 1
+	}
+	type future struct{ c chan probeOutcome }
+	launch := func(comp []int) *future {
+		c := make(chan probeOutcome, 1)
+		go func() {
+			hit, added := f.probe(comp)
+			c <- probeOutcome{hit: hit, added: added}
+		}()
+		return &future{c: c}
+	}
+
+	var window []*future
+	genDone := false
+	miss := 0
+	var out []bool
+	for {
+		// 补充在途窗口至 limit, 但不超过 miss 边界。
+		for !genDone && !f.isAborted() && len(window) < limit && (stop <= 0 || miss < stop) {
+			comp, ok := gen()
+			if !ok {
+				genDone = true
+				break
+			}
+			window = append(window, launch(comp))
+		}
+		if len(window) == 0 {
+			break
+		}
+		o := <-window[0].c
+		window = window[1:]
+		if o.added {
+			f.reportHit()
+		}
+		out = append(out, o.hit)
+		if o.hit {
+			miss = 0
+		} else if stop > 0 {
+			miss++
+			if miss >= stop {
+				for _, w := range window { // 丢弃在途(已发出的请求自然完成)
+					<-w.c
+				}
+				window = nil
+				genDone = true
+			}
+		}
+	}
+	return out
+}
+
+// probeOutcome 一次并发探测的结果。
+type probeOutcome struct {
+	hit   bool // 候选是否存在(含 seeds 预置命中)
+	added bool // 是否首次写入 hits(真正的新发现)
 }
 
 func (f *frontier) render(comp []int) string {
@@ -52,202 +129,161 @@ func (f *frontier) render(comp []int) string {
 	return joinComps(comp)
 }
 
-// probe 探测一个版本候选, 命中即记录; 返回 (是否命中)。
-func (f *frontier) probe(comp []int) bool {
-	if f.aborted {
-		return false
+// probe 探测一个版本候选, 命中即记录; 返回 (是否命中, 是否新增命中)。
+// added=true 表示本次首次写入 f.hits(新发现), 用于实时命中计数。
+func (f *frontier) probe(comp []int) (hit, added bool) {
+	if f.aborted.Load() {
+		return false, false
 	}
 	v := f.render(comp)
 	// 已在历史区命中或本策略命中过, 跳过。
 	if f.seeds[v] {
-		return true
+		return true, false
 	}
 	f.mu.Lock()
 	if _, exists := f.hits[v]; exists {
 		f.mu.Unlock()
-		return true
+		return true, false
 	}
 	f.mu.Unlock()
 
 	if f.probed.Add(1) > f.budget {
-		f.aborted = true
-		return false
+		f.aborted.Store(true)
+		return false, false
 	}
 	u := strings.ReplaceAll(f.tpl, "{v}", v)
 	r := probeURLWithQueryFallback(f.hc, f.o, u)
 	if r.found && (r.size < 0 || r.size >= f.o.minSize) {
 		f.mu.Lock()
-		f.hits[v] = r
+		_, exists := f.hits[v]
+		if !exists {
+			f.hits[v] = r
+		}
 		f.mu.Unlock()
-		return true
+		return true, !exists
 	}
-	return false
+	return false, false
 }
 
 // isAborted 返回预算是否已耗尽。
-func (f *frontier) isAborted() bool { return f.aborted }
+func (f *frontier) isAborted() bool { return f.aborted.Load() }
 
-// resetWindow 重置滚动未命中窗口(用于维度切换)。
-func (f *frontier) resetWindow() {
-	f.mu.Lock()
-	f.windowMiss = 0
-	f.mu.Unlock()
+// sweep 对一组取值(升序或降序皆可)用 build 生成候选, 流水线并发探测,
+// 直到连续 o.stop 个未命中即停止该方向。命中副作用(记录/进度)在 probe 内完成。
+func (f *frontier) sweep(build func(int) []int, vals []int) {
+	i := 0
+	f.probeParallel(func() ([]int, bool) {
+		if i < len(vals) {
+			v := vals[i]
+			i++
+			return build(v), true
+		}
+		return nil, false
+	}, f.o.stop)
 }
 
-// windowProbe 探测一个候选并维护滚动窗口: 命中刷新计数; 连续未命中达到
-// -stop 次后返回 false(调用方应停止当前方向的扫描)。命中/未命中均返回是否继续。
-// windowProbe 探测 + 滚动窗口计数; 调用方需持有 f.mu。
-func (f *frontier) windowProbe(comp []int) bool {
-	hit := f.probe(comp)
-	if hit {
-		f.windowMiss = 0
+// rangeVals 生成 [lo,hi] 步进 step 的取值序列。
+func rangeVals(lo, hi, step int) []int {
+	var out []int
+	if step > 0 {
+		for v := lo; v <= hi; v += step {
+			out = append(out, v)
+		}
 	} else {
-		f.windowMiss++
+		for v := lo; v >= hi; v += step {
+			out = append(out, v)
+		}
 	}
-	return f.windowMiss < f.o.stop
+	return out
 }
 
-// scanDown 向下滚动扫描: 从锚点分量递减, 使用滚动窗口语义(连续 -stop 次未命中停止)。
-// P==1: 单层直接递减.
-// P==2: minor 递减 → major 递减.
-// P>=3: patch 下探 → minor 下探(补 patch 上探) → major 下探(扫 minor/patch)。
+// scanDown 向下滚动扫描: 以锚点为中心逐维双向扩散, 使用滚动窗口语义
+// (连续 -stop 次未命中停止该方向)。每个方向均流水线并发探测。
 func (f *frontier) scanDown(anchor []int) {
 	P := len(anchor)
 
+	// 先探锚点自身(恰好一次; 锚点通常命中, 不能放进带 miss 截断的并发流)。
+	if _, added := f.probe(anchor); added {
+		f.reportHit()
+	}
+
 	if P == 1 {
-		// 先探锚点自身, 再向两侧扩散.
-		if f.windowProbe(anchor) {
-			f.resetWindow()
-		}
-		for v := anchor[0] - 1; v >= 0 && !f.isAborted(); v-- {
-			if !f.windowProbe([]int{v}) {
-				break
-			}
-		}
-		f.resetWindow()
-		for v := anchor[0] + 1; v <= f.hi[0] && !f.isAborted(); v++ {
-			if !f.windowProbe([]int{v}) {
-				break
-			}
-		}
+		f.sweep(func(v int) []int { return []int{v} }, rangeVals(anchor[0]-1, 0, -1))
+		f.sweep(func(v int) []int { return []int{v} }, rangeVals(anchor[0]+1, f.hi[0], 1))
 		return
 	}
 
 	if P == 2 {
-		// 先探锚点自身.
-		if f.windowProbe(anchor) {
-			f.resetWindow()
-		}
 		// minor 两侧扩散.
-		for mm := anchor[1] - 1; mm >= 0 && !f.isAborted(); mm-- {
-			if !f.windowProbe([]int{anchor[0], mm}) {
-				break
-			}
-		}
-		f.resetWindow()
-		for mm := anchor[1] + 1; mm <= f.hi[1] && !f.isAborted(); mm++ {
-			if !f.windowProbe([]int{anchor[0], mm}) {
-				break
-			}
-		}
-		f.resetWindow()
+		f.sweep(func(v int) []int { return []int{anchor[0], v} }, rangeVals(anchor[1]-1, 0, -1))
+		f.sweep(func(v int) []int { return []int{anchor[0], v} }, rangeVals(anchor[1]+1, f.hi[1], 1))
 		// major 两侧扩散.
-		for M2 := anchor[0] - 1; M2 >= 0 && !f.isAborted(); M2-- {
-			if !f.windowProbe([]int{M2}) {
-				break
-			}
-		}
-		f.resetWindow()
-		for M2 := anchor[0] + 1; M2 <= f.hi[0] && !f.isAborted(); M2++ {
-			if !f.windowProbe([]int{M2}) {
-				break
-			}
-		}
+		f.sweep(func(v int) []int { return []int{v, 0} }, rangeVals(anchor[0]-1, 0, -1))
+		f.sweep(func(v int) []int { return []int{v, 0} }, rangeVals(anchor[0]+1, f.hi[0], 1))
 		return
 	}
 
-	// P >= 3: 严格以锚点为中心的双向扩散.
-	// 对每个维度: 先向下试探 stop 次, 再向上试探 stop 次; 命中则 resetWindow。
+	// P >= 3: 以锚点为中心逐维双向扩散(与原版方向语义一致)。
 	const patchUpLimit = 5
 
-	// 1) 探锚点自身.
-	if f.windowProbe(anchor) {
-		f.resetWindow()
-	}
+	// 1) patch 下探 + 上探(小幅), 同基座 (anchor0,anchor1)。
+	f.sweep(func(v int) []int { return []int{anchor[0], anchor[1], v} }, rangeVals(anchor[2]-1, 0, -1))
+	f.sweep(func(v int) []int { return []int{anchor[0], anchor[1], v} },
+		rangeVals(anchor[2]+1, anchor[2]+patchUpLimit, 1))
 
-	// 2) patch 向下 (anchor[P-1]-1 .. 0).
-	for p := anchor[P-1] - 1; p >= 0 && !f.isAborted(); p-- {
-		if !f.windowProbe([]int{anchor[0], anchor[1], p}) {
-			break
-		}
-	}
-	f.resetWindow()
-	// patch 向上 (anchor[P-1]+1 .. anchor[P-1]+patchUpLimit).
-	for p := anchor[P-1] + 1; p <= anchor[P-1]+patchUpLimit && !f.isAborted(); p++ {
-		if !f.windowProbe([]int{anchor[0], anchor[1], p}) {
-			break
-		}
-	}
-	f.resetWindow()
+	// 2) minor 两侧扩散(基座 patch=0)。
+	f.sweep(func(v int) []int { return []int{anchor[0], v, 0} }, rangeVals(anchor[1]-1, 0, -1))
+	f.sweep(func(v int) []int { return []int{anchor[0], v, 0} },
+		rangeVals(anchor[1]+1, anchor[1]+f.o.stop*2, 1))
 
-	// 3) minor 向下 (anchor[1]-1 .. 0).
-	for mm := anchor[1] - 1; mm >= 0 && !f.isAborted(); mm-- {
-		if !f.windowProbe([]int{anchor[0], mm, 0}) {
-			break
-		}
-	}
-	f.resetWindow()
-	// minor 向上 (anchor[1]+1 .. anchor[1]+stop*2).
-	for mm := anchor[1] + 1; mm <= anchor[1]+f.o.stop*2 && !f.isAborted(); mm++ {
-		if !f.windowProbe([]int{anchor[0], mm, 0}) {
-			break
-		}
-	}
-	f.resetWindow()
-
-	// 4) major 向下 (anchor[0]-1 .. 0).
-	for M2 := anchor[0] - 1; M2 >= 0 && !f.isAborted(); M2-- {
-		if !f.windowProbe([]int{M2, 0, 0}) {
-			break
-		}
-	}
-	f.resetWindow()
-	// major 向上: 尾号型版本 major 变化范围有限, 用 stop*2 上界(与 minor 向上同量级);
-	// 标准版本 major 可能跨度大, 放宽到 stop*5。
+	// 3) major 两侧扩散(基座 0,0)。尾号型 major 变化范围小(stop*2), 标准版本放宽 stop*5。
+	f.sweep(func(v int) []int { return []int{v, 0, 0} }, rangeVals(anchor[0]-1, 0, -1))
 	majorUpper := anchor[0] + f.o.stop*5
-	if f.widths[P-1] > 2 { // 尾号型, major 通常不变
+	if f.widths[P-1] > 2 {
 		majorUpper = anchor[0] + f.o.stop*2
 	}
 	if majorUpper > f.hi[0] {
 		majorUpper = f.hi[0]
 	}
-	for M2 := anchor[0] + 1; M2 <= majorUpper && !f.isAborted(); M2++ {
-		if !f.windowProbe([]int{M2, 0, 0}) {
-			break
-		}
-	}
+	f.sweep(func(v int) []int { return []int{v, 0, 0} }, rangeVals(anchor[0]+1, majorUpper, 1))
 }
 
-// scanDim 从 lo 起逐值探测维度 buildCand 直到 hi(含), 连续 stop 次未命中即停。
-// 已存在于 skip 集合的值跳过(不重复探测)。返回命中的取值升序列表。
+// scanDim 从 lo 起逐值探测维度 buildCand 直到 hi(含), 连续 front-stop 次未命中即停。
+// 已存在于 skip 集合的值视为命中且跳过探测(不重复探测、不累计 miss)。
+// 返回命中的取值升序列表。流水线并发: 至多 -c 个请求在途, 完成一个立即补下一个。
 func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]bool) []int {
-	var hits []int
-	miss := 0
-	for v := lo; v <= hi; v++ {
-		if skip[v] {
-			hits = append(hits, v)
-			continue
-		}
-		if f.probe(buildCand(v)) {
-			hits = append(hits, v)
-			miss = 0
-		} else {
-			miss++
-			if miss >= f.o.frontStop {
-				break
-			}
+	// 先记录非 skip 候选的取值序列, 供结果回填。
+	var probeOrder []int
+	for x := lo; x <= hi; x++ {
+		if !skip[x] {
+			probeOrder = append(probeOrder, x)
 		}
 	}
+
+	pi := 0
+	res := f.probeParallel(func() ([]int, bool) {
+		// 跳过 skip 候选: 它们不算探测, 但要保持升序, 故逐值推进。
+		for pi < len(probeOrder) {
+			// 仅发射非 skip 候选; skip 已在外部计为命中。
+			v := probeOrder[pi]
+			pi++
+			return buildCand(v), true
+		}
+		return nil, false
+	}, f.o.frontStop)
+
+	hits := []int{}
+	for x := lo; x <= hi; x++ {
+		if skip[x] {
+			hits = append(hits, x)
+		}
+	}
+	for i, h := range res {
+		if h && i < len(probeOrder) {
+			hits = append(hits, probeOrder[i])
+		}
+	}
+	sort.Ints(hits)
 	return hits
 }
 
