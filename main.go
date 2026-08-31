@@ -32,30 +32,30 @@ type Prober struct {
 
 // 命令行选项。
 type options struct {
-	url       string
-	from      string
-	to        string
-	mode      string
-	strategy  string
-	universe  int
-	frontStop int
-	stop      int
-	conc      int
-	timeout   time.Duration
-	retry     int
-	max       int
-	skipTLS   bool
-	out       string
-	sizes     bool
-	strict    bool
-	quiet     bool
-	ua        string
-	minSize   int64
-	verify    bool
-	platform  bool
-	beyond    int
-	forceTpl      bool
-	reverse       bool
+	url            string
+	from           string
+	to             string
+	mode           string
+	strategy       string
+	universe       int
+	frontStop      int
+	stop           int
+	conc           int
+	timeout        time.Duration
+	retry          int
+	max            int
+	skipTLS        bool
+	out            string
+	sizes          bool
+	strict         bool
+	quiet          bool
+	ua             string
+	minSize        int64
+	verify         bool
+	platform       bool
+	beyond         int
+	forceTpl       bool
+	reverse        bool
 	tlsFingerprint string // TLS 指纹伪装: chrome、firefox、ios 等
 	pathVariants   bool   // 主形态 miss 时试探通用路径变体(应对发布目录改版/改名)
 }
@@ -186,7 +186,7 @@ func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // fingerprints 预定义的 TLS 客户端指纹映射。
 var fingerprints = map[string]tlsutil.ClientHelloID{
 	// Chrome
-	"chrome": tlsutil.HelloChrome_Auto, // = HelloChrome_133
+	"chrome":    tlsutil.HelloChrome_Auto, // = HelloChrome_133
 	"chrome58":  tlsutil.HelloChrome_58,
 	"chrome62":  tlsutil.HelloChrome_62,
 	"chrome70":  tlsutil.HelloChrome_70,
@@ -201,7 +201,7 @@ var fingerprints = map[string]tlsutil.ClientHelloID{
 	"chrome131": tlsutil.HelloChrome_131,
 	"chrome133": tlsutil.HelloChrome_133,
 	// Firefox
-	"firefox": tlsutil.HelloFirefox_Auto, // = HelloFirefox_120
+	"firefox":    tlsutil.HelloFirefox_Auto, // = HelloFirefox_120
 	"firefox55":  tlsutil.HelloFirefox_55,
 	"firefox56":  tlsutil.HelloFirefox_56,
 	"firefox63":  tlsutil.HelloFirefox_63,
@@ -211,7 +211,7 @@ var fingerprints = map[string]tlsutil.ClientHelloID{
 	"firefox105": tlsutil.HelloFirefox_105,
 	"firefox120": tlsutil.HelloFirefox_120,
 	// iOS
-	"ios": tlsutil.HelloIOS_Auto, // = HelloIOS_14
+	"ios":   tlsutil.HelloIOS_Auto, // = HelloIOS_14
 	"ios11": tlsutil.HelloIOS_11_1,
 	"ios12": tlsutil.HelloIOS_12_1,
 	"ios13": tlsutil.HelloIOS_13,
@@ -219,14 +219,14 @@ var fingerprints = map[string]tlsutil.ClientHelloID{
 	// Android
 	"android": tlsutil.HelloAndroid_11_OkHttp,
 	// Safari / macOS
-	"safari": tlsutil.HelloSafari_Auto, // = HelloSafari_16_0
+	"safari":   tlsutil.HelloSafari_Auto, // = HelloSafari_16_0
 	"safari16": tlsutil.HelloSafari_16_0,
 	// Edge
-	"edge": tlsutil.HelloEdge_Auto, // = HelloEdge_85
+	"edge":    tlsutil.HelloEdge_Auto, // = HelloEdge_85
 	"edge85":  tlsutil.HelloEdge_85,
 	"edge106": tlsutil.HelloEdge_106,
 	// 360
-	"360": tlsutil.Hello360_Auto, // = Hello360_7_5
+	"360":    tlsutil.Hello360_Auto, // = Hello360_7_5
 	"3607":   tlsutil.Hello360_7_5,
 	"360_11": tlsutil.Hello360_11_0,
 	// QQ

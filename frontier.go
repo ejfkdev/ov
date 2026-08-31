@@ -23,19 +23,19 @@ import (
 
 // frontier 前沿探测器。
 type frontier struct {
-	hc         *http.Client
-	o          *options
-	tpl        string
-	ua         string
-	widths     []int           // 组件宽度(保持 2025.08.22 式前导零)
-	hi         []int           // 每维度上界(universe 或显式 -to)
-	seeds      map[string]bool // 历史命中版本(播种已知主/次/补丁)
-	hits       map[string]probeResult
-	probed     *atomic.Int64
-	hitsFound  *atomic.Int64 // 全程命中计数(用于实时进度)
-	budget     int64
-	aborted    atomic.Bool // 预算是否耗尽(并发探测下用原子标志)
-	mu         sync.Mutex
+	hc        *http.Client
+	o         *options
+	tpl       string
+	ua        string
+	widths    []int           // 组件宽度(保持 2025.08.22 式前导零)
+	hi        []int           // 每维度上界(universe 或显式 -to)
+	seeds     map[string]bool // 历史命中版本(播种已知主/次/补丁)
+	hits      map[string]probeResult
+	probed    *atomic.Int64
+	hitsFound *atomic.Int64 // 全程命中计数(用于实时进度)
+	budget    int64
+	aborted   atomic.Bool // 预算是否耗尽(并发探测下用原子标志)
+	mu        sync.Mutex
 }
 
 func newFrontier(hc *http.Client, o *options, tpl string, widths []int,
@@ -245,14 +245,71 @@ func (f *frontier) sparseMinorProbe(M int, knownMinors map[int]bool) []int {
 		if f.isAborted() {
 			break
 		}
-		comp := make([]int, len(f.hi))
-		comp[0], comp[1] = M, m
-		hit, _ := f.probe(comp)
-		if hit {
+		if f.probeMinorExists(M, m) {
 			out = append(out, m)
 		}
 	}
 	return out
+}
+
+// probeMinorExists 探测 (M, mm) 基座是否存在: 依次试补丁 0/1/2, 任一命中即存在(早停)。
+// 这样"只有 .1/.2 补丁、没有 .0 基座"的副版本也能被发现。2 分量版本无补丁维度, 只探一次。
+func (f *frontier) probeMinorExists(M, mm int) bool {
+	P := len(f.hi)
+	maxPatch := 2
+	if P < 3 {
+		maxPatch = 0
+	}
+	for pz := 0; pz <= maxPatch; pz++ {
+		if f.isAborted() {
+			return false
+		}
+		comp := make([]int, P)
+		comp[0], comp[1] = M, mm
+		if P >= 3 {
+			comp[2] = pz
+		}
+		hit, _ := f.probe(comp)
+		if hit {
+			return true
+		}
+	}
+	return false
+}
+
+// scanMinorsPatchAware 顺序扫描主版本 M 的副版本 0..hi[1], 每个副版本用
+// probeMinorExists(补丁 0/1/2 早停)判定存在; skip 中的副版本直接计为命中。
+// 为避免"前面一段连续空副版本"占满 -front-stop 配额、导致其后真实副版本被截断,
+// 连空配额放宽为 3×front-stop; 命中即重置。返回命中的副版本号(升序)。
+// 顺序执行以保证"连空截断"语义; 实际探测量很小(历史区命中的副版本都在 skip 里免费跳过)。
+func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
+	if len(f.hi) < 2 {
+		return nil
+	}
+	hi := f.hi[1]
+	stop := f.o.frontStop * 3
+	var hits []int
+	miss := 0
+	for mm := 0; mm <= hi; mm++ {
+		if f.isAborted() {
+			break
+		}
+		if skip[mm] {
+			hits = append(hits, mm)
+			miss = 0
+			continue
+		}
+		if f.probeMinorExists(M, mm) {
+			hits = append(hits, mm)
+			miss = 0
+		} else {
+			miss++
+			if miss >= stop {
+				break
+			}
+		}
+	}
+	return hits
 }
 
 // sparseMajorCandidates 生成"广撒网"的候选主版本号(升序去重):
@@ -260,6 +317,7 @@ func (f *frontier) sparseMinorProbe(M int, knownMinors map[int]bool) []int {
 //  2. 中程步长 2: 直到 anchor+midBand;
 //  3. 整数倍撒点: 5/10 的倍数(只到 hi 与 midBand 的较小者, 避免覆盖整个 universe);
 //  4. 年份带: 另一套编号体系(2021..2030 或锚点±4), 不受 universe 限制。
+//
 // 整体上限 capCount 个候选, 使"广撒网"成本稳定在几十次而非上千。
 func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]bool) []int {
 	set := map[int]bool{}
@@ -561,14 +619,11 @@ func (f *frontier) run(anchor []int) {
 		if P >= 2 && M == anchor[0] {
 			ms[anchor[1]] = true
 		}
-		buildMinor := func(mm int) []int {
-			c := make([]int, P)
-			c[0], c[1] = M, mm
-			return c
-		}
 		var minorHits []int
 		if P >= 2 {
-			minorHits = f.scanDim(buildMinor, 0, f.hi[1], ms)
+			// 副版本扫描按补丁 0/1/2 早停探测, 覆盖"只有 .1/.2、无 .0 基座"的副版本。
+			// 历史区已命中的副版本在 skip 中, 直接计入不再探测。
+			minorHits = f.scanMinorsPatchAware(M, ms)
 			// 稀疏副版本撒网: 抓稠密扫描(连空即停)够不到的跳号副版本。
 			knownMinors := map[int]bool{}
 			for _, mm := range minorHits {
@@ -602,7 +657,7 @@ func (f *frontier) run(anchor []int) {
 			if pSet == nil {
 				pSet = map[int]bool{}
 			}
-			lo := 1
+			lo := 0
 			if isAnchorBase {
 				lo = anchor[2] + 1 // 锚点基座从已知补丁+1 起, 找更新的补丁
 			}

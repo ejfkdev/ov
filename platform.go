@@ -215,6 +215,7 @@ func mapCase(orig, repl string) string {
 // 不针对任何具体站点, 只做两类与版本无关、且保持同一 OS/扩展名的结构试探:
 //  1. 去掉紧邻文件的最后一级静态目录段(发布目录改版, 如旧版少一层 macos-x64/ 子目录);
 //  2. 仅架构 token 替换(同 OS 同扩展, 如 mac-arm64 ↔ mac-x64)。
+//
 // 用于版本枚举中主形态 404 时低成本试探同一产物类型(other 架构/少一层目录)的发布路径。
 // 刻意不做跨 OS(mac↔win)或跨扩展名(.dmg↔.exe)替换——那是 -platform 的职责, 放这里会请求爆炸。
 func pathVariants(u string) []string {
