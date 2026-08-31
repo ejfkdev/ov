@@ -486,6 +486,24 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		url  string
 		head probeResult
 	}
+	// 历史区主版本预扫: 先逐主版本试几个代表入口, 空主版本(如布局改版后
+	// 整段废弃的旧主版本)整段跳过稠密枚举 —— 高延迟网络上省下大量注定 404
+	// 的请求; 命中的代表入口仍会在随后的稠密枚举中再探一次, 不引入重复发现。
+	if o.strategy == "smart" && len(anchor) > 0 && anchor[0] > from[0] {
+		liveMajors := prescanOldMajors(hc, o, tpl, widths, from[0], anchor[0], &probed)
+		filtered := make([]string, 0, len(candidates))
+		for _, v := range candidates {
+			comp := parseSimple(v)
+			if len(comp) >= 1 && liveMajors[comp[0]] {
+				filtered = append(filtered, v)
+			}
+		}
+		if !o.quiet {
+			fmt.Fprintf(os.Stderr, "主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
+				len(liveMajors), len(candidates), len(filtered))
+		}
+		candidates = filtered
+	}
 	verifyJobs := make(chan verifyJob, 256)
 	var vwg sync.WaitGroup
 	for i := 0; i < o.conc; i++ {
@@ -735,6 +753,64 @@ func probeTemplateDiscover(hc *http.Client, o *options, tpl, v string) probeResu
 		}
 	}
 	return r
+}
+
+// majorPrescanProbe 预扫主版本 M 是否存在: 并发试 (M, 0..4, 0) 代表入口,
+// 任一命中即存在(早停)。真实产品每个主版本的首发几乎总在 minor 0..4。
+func majorPrescanProbe(hc *http.Client, o *options, tpl string, widths []int, M int) bool {
+	P := len(widths)
+	if P < 2 {
+		P = 2
+	}
+	res := make(chan bool, 5)
+	launched := 0
+	for m := 0; m <= 4; m++ {
+		comp := make([]int, P)
+		comp[0], comp[1] = M, m
+		v := joinCompsW(comp, widths)
+		launched++
+		go func(v string) {
+			res <- probeTemplateDiscover(hc, o, tpl, v).found
+		}(v)
+	}
+	for i := 0; i < launched; i++ {
+		if <-res {
+			return true
+		}
+	}
+	return false
+}
+
+// prescanOldMajors 对 [fromMajor, anchorMajor) 的每个主版本做代表入口预扫,
+// 返回存在的主版本集合(恒含锚点主版本)。空主版本(布局改版后整段废弃的旧主版本)
+// 的稠密枚举被整段跳过——高延迟网络上省下大量注定 404 的请求。
+// 预扫失败方是开放的: 未及预扫的剩余主版本照常枚举, 不会漏发现。
+func prescanOldMajors(hc *http.Client, o *options, tpl string, widths []int,
+	fromMajor, anchorMajor int, probed *atomic.Int64) map[int]bool {
+	live := map[int]bool{anchorMajor: true}
+	var mu sync.Mutex
+	sem := make(chan struct{}, o.conc)
+	var wg sync.WaitGroup
+	// 预扫上限: 超过 48 个旧主版本的超大区间直接交给稠密枚举(防预扫本身失控)。
+	if anchorMajor-fromMajor > 48 {
+		fromMajor = anchorMajor - 48
+	}
+	for M := fromMajor; M < anchorMajor; M++ {
+		probed.Add(1)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(M int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if majorPrescanProbe(hc, o, tpl, widths, M) {
+				mu.Lock()
+				live[M] = true
+				mu.Unlock()
+			}
+		}(M)
+	}
+	wg.Wait()
+	return live
 }
 
 // probeURLWithRetry 带重试的探测(网络错误/429/5xx 重试)。
