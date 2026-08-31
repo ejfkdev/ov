@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // frontier 前沿探测器。
@@ -36,26 +37,40 @@ type frontier struct {
 	budget    int64
 	aborted   atomic.Bool // 预算是否耗尽(并发探测下用原子标志)
 	mu        sync.Mutex
+	progMu    sync.Mutex    // 进度行输出的串行化
+	sem       chan struct{} // 全局在途请求上限(与 -c 一致), 防嵌套并发把并发度叠到数百
 }
 
 func newFrontier(hc *http.Client, o *options, tpl string, widths []int,
 	seeds map[string]bool, probed *atomic.Int64, hitsFound *atomic.Int64, budget int64) *frontier {
+	n := o.conc
+	if n < 1 {
+		n = 1
+	}
 	return &frontier{
 		hc: hc, o: o, tpl: tpl, ua: o.ua, widths: widths,
 		seeds: seeds, hits: map[string]probeResult{},
 		probed: probed, hitsFound: hitsFound, budget: budget,
+		sem: make(chan struct{}, n),
 	}
 }
 
-// reportHit 在并发扫描命中新基座时刷新实时进度。
-func (f *frontier) reportHit() {
-	if f.hitsFound == nil {
+// reportProbe 刷新实时进度行(每次探测完成都刷新, 避免前沿阶段看似卡住)。
+func (f *frontier) reportProbe() {
+	if f.o.quiet || f.probed == nil || f.hitsFound == nil {
 		return
 	}
-	f.hitsFound.Add(1)
-	if !f.o.quiet {
-		fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
+	f.progMu.Lock()
+	fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
+	f.progMu.Unlock()
+}
+
+// reportHit 在并发扫描命中新基座时计入命中并刷新实时进度。
+func (f *frontier) reportHit() {
+	if f.hitsFound != nil {
+		f.hitsFound.Add(1)
 	}
+	f.reportProbe()
 }
 
 // probeParallel 流水线并发探测: gen 按序产出候选, 维持最多 conc 个在途请求,
@@ -66,6 +81,12 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 	limit := f.o.conc
 	if limit < 1 {
 		limit = 1
+	}
+	// 有连空截断时预取窗口只需略超前于 stop(超出部分的探测大概率也是 miss,
+	// 大窗口只是平白多打请求); 无截断(stop<=0)时保持 -c 全并发。
+	lookahead := limit
+	if stop > 0 && stop*2 < lookahead {
+		lookahead = stop * 2
 	}
 	type future struct{ c chan probeOutcome }
 	launch := func(comp []int) *future {
@@ -82,8 +103,8 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 	miss := 0
 	var out []bool
 	for {
-		// 补充在途窗口至 limit, 但不超过 miss 边界。
-		for !genDone && !f.isAborted() && len(window) < limit && (stop <= 0 || miss < stop) {
+		// 补充在途窗口至 lookahead, 但不超过 miss 边界。
+		for !genDone && !f.isAborted() && len(window) < lookahead && (stop <= 0 || miss < stop) {
 			comp, ok := gen()
 			if !ok {
 				genDone = true
@@ -157,7 +178,14 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 		f.aborted.Store(true)
 		return false, false
 	}
+	if f.sem != nil {
+		f.sem <- struct{}{}
+	}
 	r := probeTemplate(f.hc, f.o, f.tpl, v)
+	if f.sem != nil {
+		<-f.sem
+	}
+	f.reportProbe()
 	if usableHit(f.o, r) {
 		f.mu.Lock()
 		_, exists := f.hits[v]
@@ -184,15 +212,25 @@ func (f *frontier) hitExists(v string) bool {
 	return ok
 }
 
-// probeMajorExists 顺序探主版本 M 的代表性入口, 任一命中即认为该主版本存在并早停。
-// 命中的入口经 probe() 记入 hits(是真实可下载版本)。已存在的主版本因此只花 1 次探测。
+// probeMajorExists 并发探主版本 M 的代表性入口(每入口一个请求), 任一命中即认为该主版本
+// 存在并早停(其余在途探测自然完成)。命中的入口经 probe() 记入 hits(是真实可下载版本)。
+// 并发发射避免慢网络下入口探测串成 N 倍延迟。
 func (f *frontier) probeMajorExists(M, P int, anchor []int) bool {
-	for _, pc := range majorEntryProbes(M, P, anchor) {
+	entries := majorEntryProbes(M, P, anchor)
+	res := make(chan bool, len(entries))
+	launched := 0
+	for _, pc := range entries {
 		if f.isAborted() {
-			return false
+			break
 		}
-		hit, _ := f.probe(pc)
-		if hit {
+		launched++
+		go func(pc []int) {
+			hit, _ := f.probe(pc)
+			res <- hit
+		}(pc)
+	}
+	for i := 0; i < launched; i++ {
+		if <-res {
 			return true
 		}
 	}
@@ -240,71 +278,136 @@ func (f *frontier) sparseMinorProbe(M int, knownMinors map[int]bool) []int {
 		add(m)
 	}
 	sort.Ints(cands)
-	var out []int
+	// 候选并发探测(probeMinorExists 内部补丁也是并发的), 避免慢网络下串成 8×3 倍延迟。
+	limit := f.o.conc
+	if limit < 1 {
+		limit = 1
+	}
+	results := make(chan int, len(cands))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, limit)
 	for _, m := range cands {
 		if f.isAborted() {
 			break
 		}
-		if f.probeMinorExists(M, m) {
-			out = append(out, m)
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(m int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if f.probeMinorExists(M, m) {
+				results <- m
+			}
+		}(m)
 	}
+	wg.Wait()
+	close(results)
+	var out []int
+	for m := range results {
+		out = append(out, m)
+	}
+	sort.Ints(out)
 	return out
 }
 
-// probeMinorExists 探测 (M, mm) 基座是否存在: 依次试补丁 0/1/2, 任一命中即存在(早停)。
-// 这样"只有 .1/.2 补丁、没有 .0 基座"的副版本也能被发现。2 分量版本无补丁维度, 只探一次。
+// probeMinorExists 探测 (M, mm) 基座是否存在: 并发试补丁 0/1/2, 任一命中即存在(早停,
+// 其余在途探测自然完成, 不等待)。这样"只有 .1/.2 补丁、没有 .0 基座"的副版本也能被发现。
+// 并发发射避免慢速网络下 3 次顺序探测串成 3 倍延迟。2 分量版本无补丁维度, 只探一次。
 func (f *frontier) probeMinorExists(M, mm int) bool {
 	P := len(f.hi)
 	maxPatch := 2
 	if P < 3 {
 		maxPatch = 0
 	}
+	type patchRes struct {
+		pz  int
+		hit bool
+	}
+	res := make(chan patchRes, maxPatch+1)
+	launched := 0
 	for pz := 0; pz <= maxPatch; pz++ {
 		if f.isAborted() {
-			return false
+			break
 		}
-		comp := make([]int, P)
-		comp[0], comp[1] = M, mm
-		if P >= 3 {
-			comp[2] = pz
-		}
-		hit, _ := f.probe(comp)
-		if hit {
+		launched++
+		go func(pz int) {
+			comp := make([]int, P)
+			comp[0], comp[1] = M, mm
+			if P >= 3 {
+				comp[2] = pz
+			}
+			hit, _ := f.probe(comp)
+			res <- patchRes{pz, hit}
+		}(pz)
+	}
+	for i := 0; i < launched; i++ {
+		if (<-res).hit {
 			return true
 		}
 	}
 	return false
 }
 
-// scanMinorsPatchAware 顺序扫描主版本 M 的副版本 0..hi[1], 每个副版本用
-// probeMinorExists(补丁 0/1/2 早停)判定存在; skip 中的副版本直接计为命中。
-// 为避免"前面一段连续空副版本"占满 -front-stop 配额、导致其后真实副版本被截断,
-// 连空配额放宽为 3×front-stop; 命中即重置。返回命中的副版本号(升序)。
-// 顺序执行以保证"连空截断"语义; 实际探测量很小(历史区命中的副版本都在 skip 里免费跳过)。
+// scanMinorsPatchAware 扫描主版本 M 的副版本 0..hi[1], 每个副版本用
+// probeMinorExists(并发补丁 0/1/2 早停)判定存在; skip 中的副版本免费计入。
+// 流水线并发: 至多 -c 个副版本在途, 按副版本顺序消费以保持"连空截断"语义;
+// 连空配额为 3×front-stop(命中即重置), 避免一段连续空副版本占满配额截掉其后真实副版本。
 func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 	if len(f.hi) < 2 {
 		return nil
 	}
 	hi := f.hi[1]
 	stop := f.o.frontStop * 3
+	limit := f.o.conc
+	if limit < 1 {
+		limit = 1
+	}
+	// 预取窗口只须略超前于连空配额, 过大只会对注定截断的空副版本多打请求。
+	lookahead := limit
+	if stop < lookahead {
+		lookahead = stop
+	}
+	type fut struct {
+		mm int
+		c  chan bool
+	}
+	launch := func(mm int) *fut {
+		c := make(chan bool, 1)
+		go func() { c <- f.probeMinorExists(M, mm) }()
+		return &fut{mm: mm, c: c}
+	}
+
+	var window []*fut
 	var hits []int
 	miss := 0
-	for mm := 0; mm <= hi; mm++ {
-		if f.isAborted() {
+	mm := 0
+	for {
+		// 补窗: 递进副版本, skip 的免费计命中, 否则发射探测; 到截断边界即停。
+		for !f.isAborted() && mm <= hi && len(window) < lookahead && miss < stop {
+			if skip[mm] {
+				hits = append(hits, mm)
+				miss = 0
+			} else {
+				window = append(window, launch(mm))
+			}
+			mm++
+		}
+		if len(window) == 0 {
 			break
 		}
-		if skip[mm] {
-			hits = append(hits, mm)
-			miss = 0
-			continue
-		}
-		if f.probeMinorExists(M, mm) {
-			hits = append(hits, mm)
+		fu := window[0]
+		window = window[1:]
+		hit := <-fu.c
+		if hit {
+			hits = append(hits, fu.mm)
 			miss = 0
 		} else {
 			miss++
 			if miss >= stop {
+				for _, w := range window { // 丢弃在途(自然完成)
+					<-w.c
+				}
+				window = nil
 				break
 			}
 		}
@@ -353,7 +456,9 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 		}
 	}
 	if !(anchor[0] >= 1900 && anchor[0] <= 2100) {
-		for y := 2021; y <= 2030; y++ {
+		// std 锚点撒年份(当前年附近): 覆盖"本期切换为年份命名"的低成本试探, 不铺满十年。
+		cur := time.Now().Year()
+		for y := cur - 1; y <= cur+1; y++ {
 			addAbs(y)
 		}
 	} else {
