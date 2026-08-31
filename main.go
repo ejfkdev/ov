@@ -10,7 +10,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,28 +39,23 @@ type Prober struct {
 
 // 命令行选项。
 type options struct {
-	url            string
-	from           string
-	to             string
-	mode           string
-	strategy       string
-	universe       int
-	frontStop      int
-	stop           int
+	// 内置固定配置(不再暴露为命令行选项)。
+	from      string
+	mode      string
+	strategy  string
+	universe  int
+	frontStop int
+	stop      int
+	retry     int
+	max       int
+	beyond    int
+	ua        string
+
 	conc           int
 	timeout        time.Duration
-	retry          int
-	max            int
 	skipTLS        bool
-	out            string
 	sizes          bool
-	strict         bool
-	quiet          bool
-	ua             string
-	minSize        int64
-	verify         bool
 	platform       bool
-	beyond         int
 	forceTpl       bool
 	reverse        bool
 	tlsFingerprint string   // TLS 指纹伪装: chrome、firefox、ios 等
@@ -73,34 +67,29 @@ type options struct {
 func parseFlags() *options {
 	flag.Usage = usage
 	o := &options{}
-	flag.StringVar(&o.url, "url", "", "下载地址(含版本号, 或含 {v} 占位符)")
-	flag.StringVar(&o.from, "from", "0.0.0", "起始版本(含)")
-	flag.StringVar(&o.to, "to", "", "结束版本(含), 默认取地址中识别的版本或更早的候选")
-	flag.StringVar(&o.mode, "mode", "auto", "版本识别模式: auto|std|date|num|alnum 或逗号组合")
-	flag.StringVar(&o.strategy, "strategy", "smart", "探测策略: smart(前沿生长, 默认)|exhaust(全量枚举到 -to)")
-	flag.IntVar(&o.universe, "universe", 199, "版本分量最大值 0..universe(=200 个取值)")
-	flag.IntVar(&o.frontStop, "front-stop", 5, "向上前沿探测中连续未命中多少次即停止")
-	flag.IntVar(&o.stop, "stop", 200, "滚动窗口: 连续未发现可下载版本多少次即停止(命中即刷新窗口)")
-	flag.IntVar(&o.conc, "c", 50, "并发数")
+	// 版本范围/识别/策略/校验等相关参数已内置为最优配置, 不再暴露为命令行选项。
+	o.from = "0.0.0"
+	o.mode = "auto"
+	o.strategy = "smart"
+	o.universe = 199
+	o.frontStop = 5
+	o.stop = 200
+	o.retry = 1
+	o.max = 500000
+	o.ua = defaultUserAgent
+	o.beyond = 3
+
+	flag.IntVar(&o.conc, "c", 50, "并发探测数")
 	flag.DurationVar(&o.timeout, "timeout", 10*time.Second, "单请求超时")
-	flag.IntVar(&o.retry, "retry", 1, "网络错误/429/5xx 的额外重试次数")
-	flag.IntVar(&o.max, "max", 500000, "总探测请求上限(含历史区与前沿区)")
 	flag.BoolVar(&o.skipTLS, "k", false, "跳过 TLS 证书校验")
-	flag.StringVar(&o.out, "o", "", "结果写入文件(默认标准输出)")
-	flag.BoolVar(&o.sizes, "sizes", false, "输出文件大小(字节)与类型")
-	flag.BoolVar(&o.strict, "strict", false, "仅接受已知魔术字节(压缩包/安装包), 拒绝其他非文本")
-	flag.BoolVar(&o.quiet, "q", false, "关闭进度输出")
-	flag.StringVar(&o.ua, "ua", defaultUserAgent, "User-Agent")
-	flag.Int64Var(&o.minSize, "minsize", 0, "最小文件大小(字节), 0 关闭")
-	flag.BoolVar(&o.verify, "verify", false, "只验证给定 URL 是否可下载(不做版本枚举)")
-	flag.BoolVar(&o.platform, "platform", false, "高级模式: 从给定 URL 生成并探测其他平台变体")
-	flag.IntVar(&o.beyond, "beyond", 3, "历史区探测到已知版本之后(更新)的版本数量, 0 表示只到已知版本")
-	flag.BoolVar(&o.forceTpl, "force-tpl", false, "跳过不可遍历检查, 强制按模板探测(可用于已含 {v} 的地址)")
-	flag.BoolVar(&o.reverse, "reverse", false, "结果按版本语义降序输出(从新到旧), 默认升序(从早到晚)")
-	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等(默认原生)")
-	flag.BoolVar(&o.pathVariants, "path-variants", false, "候选主形态 404 时, 试探通用路径变体(平台/架构 token 替换、去掉一层发布子目录)")
 	flag.StringVar(&o.proxy, "x", "", "代理 (curl 风格): http://host:port 或 socks5://host:port")
 	flag.Var((*headerFlag)(&o.headers), "H", "自定义请求头 (curl 风格, 可重复): \"Name: Value\"")
+	flag.BoolVar(&o.sizes, "sizes", false, "输出文件大小(字节)与类型")
+	flag.BoolVar(&o.reverse, "reverse", false, "结果按新到旧输出")
+	flag.BoolVar(&o.platform, "platform", false, "从给定 URL 探测其他平台/架构变体")
+	flag.BoolVar(&o.pathVariants, "path-variants", false, "主路径 404 时回退通用路径变体(去子目录/换架构名)")
+	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等")
+	flag.BoolVar(&o.forceTpl, "force-tpl", false, "强制使用 {v} 模板探测(绕过不可遍历检查)")
 	flag.Parse()
 	return o
 }
@@ -129,12 +118,6 @@ func usage() {
   # 最基本: 自动识别 3.10.2 并枚举全部版本
   ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
 
-  # 只要某个区间
-  ov -from 1.5.0 -to 2.0.0 "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.4-cn.dmg"
-
-  # 只看某条链接是否可下载(不枚举)
-  ov -verify "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg?download_id=xxx"
-
   # 输出大小与类型, 新版本在前
   ov -sizes -reverse "https://download.manus.im/Manus-Setup-1.7.2.dmg"
 
@@ -144,44 +127,23 @@ func usage() {
   # 发布目录改过版(旧版少一层子目录)也能找回旧版
   ov -path-variants "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
 
-  # 慢网络: 降低并发、收紧超时
+  # 走代理 / 带自定义头 / 跑慢速 CDN
+  ov -x http://127.0.0.1:7890 "https://host/app-1.7.2.dmg"
+  ov -H "Authorization: Bearer xxx" "https://host/app-1.7.2.dmg"
   ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
 
-主要选项:
+选项:
   -c N              并发探测数 (默认 50)
-  -from VER         起始版本 (默认 0.0.0)
-  -to VER           结束版本 (默认按地址自动推断)
-  -mode M           版本格式: auto|std|date|num|alnum (默认 auto)
-  -strategy S       smart=动态扩张(默认) | exhaust=全量枚举到 -to
-  -sizes            输出文件大小(字节)与类型
-  -reverse          结果按新到旧输出(默认旧到新)
-  -o FILE           结果写入文件(默认标准输出)
-  -q                关闭进度输出
-  -url URL          用 -url 传下载地址(等价于位置参数)
-
-验证相关:
-  -verify           只验证单个 URL 是否可下载, 不做版本枚举
-  -strict           仅接受已知安装包魔数(严格模式)
-  -minsize N        最小文件大小(字节), 0 关闭
+  -timeout D        单请求超时 (默认 10s)
   -k                跳过 TLS 证书校验
-
-高级:
+  -x PROXY          代理 (curl 风格): http://host:port 或 socks5://host:port
+  -H "Name: Value"  自定义请求头 (curl 风格, 可重复)
+  -sizes            输出文件大小(字节)与类型
+  -reverse          结果按新到旧输出
   -platform         从给定 URL 探测其他平台/架构变体
   -path-variants    主路径 404 时回退通用路径变体(去子目录/换架构名)
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
-  -x PROXY          代理 (curl 风格): http://host:port 或 socks5://host:port
-  -H "Name: Value"  自定义请求头 (curl 风格, 可重复)
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
-  -timeout D        单请求超时 (默认 10s)
-  -retry N          网络错误/429/5xx 的重试次数 (默认 1)
-  -ua S             User-Agent
-
-调优(一般不需要动):
-  -stop N           滚动窗口: 连续未命中多少次停止 (默认 200)
-  -front-stop N     前沿生长连续未命中停止阈值 (默认 5)
-  -universe N       版本分量最大值 (默认 199)
-  -max N            探测请求总量上限 (默认 500000)
-  -beyond N         已知版本之后再探 N 个更新 (默认 3)
 `)
 }
 
@@ -321,20 +283,16 @@ func newUTLSRoundTripper(name string, skipTLS bool, proxyDial proxy.Dialer) http
 
 func main() {
 	o := parseFlags()
-	if flag.NArg() == 0 && o.url == "" {
+	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-	raw := strings.TrimSpace(o.url)
-	if raw == "" {
-		raw = flag.Arg(0)
-	}
+	raw := strings.TrimSpace(flag.Arg(0))
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
 		fatal("地址必须以 http:// 或 https:// 开头: %s", raw)
 	}
 
 	p := &Prober{modes: newVersionModes(modeSet(o.mode))}
-	strictMagic = o.strict
 
 	// -x 代理与 -H 自定义请求头(curl 风格)。
 	var proxyFunc func(*http.Request) (*url.URL, error)
@@ -386,11 +344,6 @@ func main() {
 		Transport: transport,
 	}
 
-	if o.verify {
-		runVerify(o, p, hc)
-		return
-	}
-
 	if o.platform {
 		runPlatform(o, hc)
 		return
@@ -417,31 +370,9 @@ func modeSet(s string) map[string]bool {
 	return m
 }
 
-// runVerify 只验证给定 URL 是否可下载, 不做枚举。
-func runVerify(o *options, p *Prober, hc *http.Client) {
-	urls := flag.Args()
-	if len(urls) == 0 {
-		urls = []string{o.url}
-	}
-	for _, u := range urls {
-		fmt.Fprintf(os.Stderr, "验证: %s\n", u)
-		r := probeURLWithQueryFallback(hc, o, u)
-		if r.found {
-			fmt.Printf("[命中] %s", u)
-			printSizes(o, r)
-			fmt.Println()
-		} else {
-			fmt.Fprintf(os.Stderr, "  不存在: %s (状态 %d)\n", r.kind, r.status)
-		}
-	}
-}
-
 // runPlatform 高级模式: 探测给定 URL 的其他平台变体。
 func runPlatform(o *options, hc *http.Client) {
 	raw := flag.Arg(0)
-	if raw == "" {
-		raw = o.url
-	}
 	// 先验证原 URL 是否有效。
 	r := probeURLWithRetry(hc, o, raw)
 	if !r.found {
@@ -463,9 +394,7 @@ func runPlatform(o *options, hc *http.Client) {
 }
 
 func verbosef(o *options, format string, a ...any) {
-	if !o.quiet {
-		fmt.Fprintf(os.Stderr, format+"\n", a...)
-	}
+	fmt.Fprintf(os.Stderr, format+"\n", a...)
 }
 
 // runEnum 核心: 识别版本 → 生成模板 → 枚举 → 并发探测 → 输出。
@@ -478,7 +407,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	// 识别版本。
 	versions := p.detectVersions(raw)
 	if len(versions) == 0 && !o.forceTpl {
-		fatal("没有识别到可枚举的版本号(当前模式 %q)。可用 -force-tpl 使用 {v} 模板, 或调整 -mode", o.mode)
+		fatal("没有识别到可枚举的版本号。可用 -force-tpl 使用 {v} 模板")
 	}
 
 	tpl := buildTemplate(raw, versions)
@@ -486,23 +415,22 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		fatal("模板中没有 {v} 占位符: %s", tpl)
 	}
 
-	// 确定探测范围(保持识别版本的位数格式, 如 2025.08.22)。
-	toText := o.to
+	// 确定探测范围: 以地址中识别的版本为上限再放宽几个补丁(保持位数格式, 如 2025.08.22)。
+	toText := ""
 	var toWidths []int
-	if toText == "" {
-		if len(versions) > 0 {
-			last := versions[len(versions)-1] // 文件名优先, 通常是最新版本
-			maxComp, widths, err := parseIntsW(last)
-			if err == nil {
-				// 只抬高末位组件, 探测已知版本之后的 -beyond 个更新版本。
-				maxComp[len(maxComp)-1] += o.beyond
-				toText = joinCompsW(maxComp, widths)
-				toWidths = widths
-			}
+	if len(versions) > 0 {
+		last := versions[len(versions)-1] // 文件名优先, 通常是最新版本
+		maxComp, widths, err := parseIntsW(last)
+		if err == nil {
+			// 只抬高末位组件, 探测已知版本之后的几个更新版本;
+			// 更高主/副版本由前沿生长与广撒网负责, 无需预先限定。
+			maxComp[len(maxComp)-1] += o.beyond
+			toText = joinCompsW(maxComp, widths)
+			toWidths = widths
 		}
 	}
 	if toText == "" {
-		fatal("未识别到版本且未指定 -to, 无法确定探测上限(可用 -force-tpl -to x.y.z)")
+		fatal("地址中未找到版本号, 无法自动确定探测范围")
 	}
 
 	from, _, err := parseIntsW(o.from)
@@ -521,7 +449,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	from = padComps(trimComps(from, n), n)
 	to = padComps(to, n)
 	if !leComps(from, to) {
-		fatal("-from (%s) 不能大于 -to (%s)", joinComps(from), joinComps(to))
+		fatal("探测范围不合法: %s 大于 %s", joinComps(from), joinComps(to))
 	}
 
 	// smart 策略的锚点: 识别到的最后一个版本(前沿探索以此为下界)。
@@ -553,13 +481,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	if len(versions) > 0 {
 		fmt.Fprintf(os.Stderr, "识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
 	}
-	if o.strategy == "exhaust" {
-		fmt.Fprintf(os.Stderr, "探测: %s ~ %s(全量枚举), 并发 %d\n",
-			joinCompsW(from, widths), joinCompsW(to, widths), o.conc)
-	} else {
-		// smart: 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
-		fmt.Fprintf(os.Stderr, "探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
-	}
+	// 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
+	fmt.Fprintf(os.Stderr, "探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
 
 	// 并发探测(两段式: 发现 + 校验):
 	//  - 发现 worker 只做 HEAD 快探, 命中疑似即立刻把校验任务丢进独立的校验队列,
@@ -573,11 +496,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	found := make(map[string]probeResult)
 	var mu sync.Mutex
 	var progMu sync.Mutex
-	showProg := !o.quiet
 	report := func() {
-		if !showProg {
-			return
-		}
 		progMu.Lock()
 		fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", probed.Load(), hitsFound.Load())
 		progMu.Unlock()
@@ -600,10 +519,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 				filtered = append(filtered, v)
 			}
 		}
-		if !o.quiet {
-			fmt.Fprintf(os.Stderr, "主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
-				len(liveMajors), len(candidates), len(filtered))
-		}
+		fmt.Fprintf(os.Stderr, "主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
+			len(liveMajors), len(candidates), len(filtered))
 		candidates = filtered
 	}
 	verifyJobs := make(chan verifyJob, 256)
@@ -667,9 +584,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	wg.Wait()
 	close(verifyJobs)
 	vwg.Wait() // 等所有魔数校验完成, found 里只剩真实可下载的版本
-	if showProg {
-		fmt.Fprintln(os.Stderr)
-	}
+	fmt.Fprintln(os.Stderr)
 
 	// smart 策略: 前沿生长, 从锚点向上发现更多版本。
 	frontierProbed := int64(0)
@@ -693,15 +608,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	}
 
 	// 输出(按版本数值升序, 历史区+前沿区合并)。
-	var out io.Writer = os.Stdout
-	if o.out != "" {
-		ofile, err := os.Create(o.out)
-		if err != nil {
-			fatal("无法创建输出文件: %v", err)
-		}
-		defer ofile.Close()
-		out = ofile
-	}
+	out := os.Stdout
 
 	keys := make([]string, 0, len(found))
 	for v := range found {
@@ -722,13 +629,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(found[v].size), found[v].kind)
 		}
 	}
-	if o.strategy == "smart" && len(anchor) > 0 {
-		fmt.Fprintf(os.Stderr, "完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
-			len(candidates), frontierProbed, len(candidates)+int(frontierProbed), count, time.Since(start).Round(time.Millisecond))
-	} else {
-		fmt.Fprintf(os.Stderr, "完成: 探测 %d 个候选, 命中 %d 个可下载地址, 耗时 %s\n",
-			len(candidates), count, time.Since(start).Round(time.Millisecond))
-	}
+	fmt.Fprintf(os.Stderr, "完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
+		len(candidates), frontierProbed, len(candidates)+int(frontierProbed), count, time.Since(start).Round(time.Millisecond))
 
 	// 高级模式: 从命中的 URL 里再找其他平台。
 	if o.platform {
@@ -777,9 +679,9 @@ func printSizes(o *options, r probeResult) {
 	}
 }
 
-// usableHit 报告探测结果是否算"可下载命中"(命中且满足 -minsize)。
+// usableHit 报告探测结果是否算"可下载命中"。
 func usableHit(o *options, r probeResult) bool {
-	return r.found && (r.size < 0 || r.size >= o.minSize)
+	return r.found
 }
 
 // resolvedURL 返回某版本实际命中的 URL: 有路径变体时用变体 URL, 否则按主模板渲染。
@@ -946,7 +848,7 @@ func probeURLWithQueryFallback(hc *http.Client, o *options, u string) probeResul
 // runRolling 滚动窗口模式: 当候选空间过大时, 以锚点为中心,
 // 向下扫描(主分量递减) + 向上前沿生长, 均使用滚动窗口命中刷新策略。
 func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []int) {
-	fmt.Fprintf(os.Stderr, "候选空间过大, 切换为滚动窗口模式 (-stop=%d)\n", o.stop)
+	fmt.Fprintf(os.Stderr, "候选空间过大, 切换为滚动窗口模式 (连续 %d 次未命中停止)\n", o.stop)
 	fmt.Fprintf(os.Stderr, "锚点: %s\n", joinCompsW(anchor, widths))
 
 	found := make(map[string]probeResult)
@@ -1007,14 +909,7 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 		}
 	}
 
-	var out io.Writer = os.Stdout
-	if o.out != "" {
-		ofile, _ := os.Create(o.out)
-		if ofile != nil {
-			defer ofile.Close()
-			out = ofile
-		}
-	}
+	out := os.Stdout
 
 	count := 0
 	for _, v := range keys {

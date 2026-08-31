@@ -65,7 +65,7 @@ func isTraversable(u string) (bool, string) {
 	// 先查查询串签名参数(在剥离 query 前): CloudFront/OSS/S3 等带签名的直链,
 	// 换版本号会使签名失效返回 403, 无法遍历。
 	if reQuerySig.MatchString(u) {
-		return false, "URL 含签名/鉴权查询串(换版本签名即失效), 不可遍历; 仅验证当前地址可用 -verify"
+		return false, "URL 含签名/鉴权查询串(不同版本的签名不同, 换版本即失效), 不可遍历"
 	}
 	path := u
 	if i := strings.Index(path, "://"); i >= 0 {
@@ -202,7 +202,7 @@ func isEnumeratable(v string) bool {
 		}
 	}
 	if longest >= 8 {
-		return false // yyyymmdd 等纯长数字, 让 -from/-to + -max 控制
+		return false // yyyymmdd 等纯长数字不可枚举
 	}
 	return true
 }
@@ -300,7 +300,7 @@ func enumerateVersions(from, to, widths []int, maxCandidates int) ([]string, err
 	out := make([]string, 0, 1024)
 	for {
 		if len(out) >= maxCandidates {
-			return nil, fmt.Errorf("候选数超过 -max=%d, 请用 -from/-to 缩小范围或调大 -max", maxCandidates)
+			return nil, fmt.Errorf("候选空间过大(%d+), 将切换滚动窗口模式", maxCandidates)
 		}
 		out = append(out, joinCompsW(cur, w))
 		i := n - 1

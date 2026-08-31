@@ -57,7 +57,7 @@ func newFrontier(hc *http.Client, o *options, tpl string, widths []int,
 
 // reportProbe 刷新实时进度行(每次探测完成都刷新, 避免前沿阶段看似卡住)。
 func (f *frontier) reportProbe() {
-	if f.o.quiet || f.probed == nil || f.hitsFound == nil {
+	if f.probed == nil || f.hitsFound == nil {
 		return
 	}
 	f.progMu.Lock()
@@ -657,7 +657,6 @@ func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]b
 
 // computeHi 计算各维度前沿上界: 默认 universe; 锚点分量超过 universe
 // (年份式主版本 2026.x、尾号大数)时以锚点为下界再留前瞻余量, 使前沿能向上生长。
-// 显式 -to 若更高则覆盖。
 func computeHi(anchor []int, o *options) []int {
 	lookahead := o.frontStop * 5
 	if lookahead < 20 {
@@ -668,15 +667,6 @@ func computeHi(anchor []int, o *options) []int {
 		hi[i] = o.universe
 		if a := anchor[i]; a >= hi[i] {
 			hi[i] = a + lookahead
-		}
-	}
-	if o.to != "" {
-		if tc, _, err := parseIntsW(o.to); err == nil {
-			for i, c := range tc {
-				if i < len(hi) && c > hi[i] {
-					hi[i] = c
-				}
-			}
 		}
 	}
 	return hi
