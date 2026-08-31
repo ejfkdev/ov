@@ -428,10 +428,10 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 
 	candidates, candErr := enumerateVersions(from, to, widths, o.max)
 
-	// 单组件大数值版本(如 072203、73734): 虽然候选空间 < max,
-	// 但扫描范围宽(0..大值)太慢, 自动改用滚动窗口以锚点为中心双向探测。
+	// 大数值主版本/尾号(如 2026.2.1 年份式、072203): 虽然候选空间可能 < max,
+	// 但从 0 枚举到如此大的值既慢又无意义, 自动改用滚动窗口以锚点为中心双向探测。
 	useRolling := candErr != nil && o.strategy == "smart" && len(anchor) > 0
-	if !useRolling && o.strategy == "smart" && len(anchor) == 1 && anchor[0] > o.stop*10 {
+	if !useRolling && o.strategy == "smart" && len(anchor) > 0 && anchor[0] > o.stop*10 {
 		useRolling = true
 	}
 	if useRolling {
@@ -652,16 +652,8 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 
 	// 向下: 从锚点主分量递减。
 	func() {
-		P := len(anchor)
 		f := newFrontier(hc, o, tpl, widths, map[string]bool{}, &probed, &hitsFound, int64(o.max))
-		f.hi = make([]int, P)
-		for i := range f.hi {
-			f.hi[i] = o.universe
-		}
-		// 尾号型单组件(如 072203): anchor 远大于 universe, hi 需以锚点为下界, 否则向上无空间。
-		if P == 1 && anchor[0] > o.universe {
-			f.hi[0] = anchor[0] + o.stop*10
-		}
+		f.hi = computeHi(anchor, o)
 		f.scanDown(anchor)
 		// 合并 scanDown 命中到 found。
 		mu.Lock()

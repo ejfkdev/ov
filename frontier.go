@@ -168,6 +168,26 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 // isAborted 返回预算是否已耗尽。
 func (f *frontier) isAborted() bool { return f.aborted.Load() }
 
+// hitExists 报告某渲染版本串是否已命中(seeds 或本策略 hits)。
+func (f *frontier) hitExists(v string) bool {
+	if f.seeds[v] {
+		return true
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.hits[v]
+	return ok
+}
+
+func containsInt(s []int, x int) bool {
+	for _, v := range s {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
 // sweep 对一组取值(升序或降序皆可)用 build 生成候选, 流水线并发探测,
 // 直到连续 o.stop 个未命中即停止该方向。命中副作用(记录/进度)在 probe 内完成。
 func (f *frontier) sweep(build func(int) []int, vals []int) {
@@ -287,27 +307,40 @@ func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]b
 	return hits
 }
 
+// computeHi 计算各维度前沿上界: 默认 universe; 锚点分量超过 universe
+// (年份式主版本 2026.x、尾号大数)时以锚点为下界再留前瞻余量, 使前沿能向上生长。
+// 显式 -to 若更高则覆盖。
+func computeHi(anchor []int, o *options) []int {
+	lookahead := o.frontStop * 5
+	if lookahead < 20 {
+		lookahead = 20
+	}
+	hi := make([]int, len(anchor))
+	for i := range hi {
+		hi[i] = o.universe
+		if a := anchor[i]; a >= hi[i] {
+			hi[i] = a + lookahead
+		}
+	}
+	if o.to != "" {
+		if tc, _, err := parseIntsW(o.to); err == nil {
+			for i, c := range tc {
+				if i < len(hi) && c > hi[i] {
+					hi[i] = c
+				}
+			}
+		}
+	}
+	return hi
+}
+
 // run 执行前沿探索。
 func (f *frontier) run(anchor []int) {
 	P := len(anchor)
 	if P == 0 || f.isAborted() {
 		return
 	}
-	// 每维度上界: 默认 universe(0..universe, 即 99 个取值);
-	// 显式 -to 时以其为每维度上界。
-	f.hi = make([]int, P)
-	for i := range f.hi {
-		f.hi[i] = f.o.universe
-	}
-	if f.o.to != "" {
-		if tc, _, err := parseIntsW(f.o.to); err == nil {
-			for i, c := range tc {
-				if i < P && c >= 0 && c < f.hi[i] {
-					f.hi[i] = c
-				}
-			}
-		}
-	}
+	f.hi = computeHi(anchor, f.o)
 	majors, minors, patches := parseSeeds(f.seeds, P)
 
 	// ---- 主版本前沿: (M,0,0,..) ----
@@ -318,6 +351,69 @@ func (f *frontier) run(anchor []int) {
 		return c
 	}
 	majorHits := f.scanDim(buildMajor, anchor[0], f.hi[0], majors)
+
+	// 未来主版本的"入口探测": 有些软件下一个大版本没有 X.0.0, 而是 X.1.0 / X.Y.Z
+	// (年份式 2026->2027.1.0、跳过式 5->6.2.0)。对 anchor 之后尚未命中的每个主版本,
+	// 试探若干代表性入口 (M, m, p), 命中即认为该主版本存在并纳入扫描。
+	// 这样从 5.5.0 也能探到 7.0.1(7 的入口在 patch), 2026.2.1 探到 2027.1.0。
+	if P >= 2 {
+		reached := map[int]bool{}
+		for _, M := range majorHits {
+			reached[M] = true
+		}
+		minorSet := []int{0, 1, 2, 3}
+		if !containsInt(minorSet, anchor[1]) {
+			minorSet = append(minorSet, anchor[1])
+		}
+		patchSet := []int{0, 1}
+		if P >= 3 && !containsInt(patchSet, anchor[2]) {
+			patchSet = append(patchSet, anchor[2])
+		}
+		emptyRun := 0 // 连续"无任何入口"的未来主版本数, 达 front-stop 即停(避免空扫到 199)
+		for M := anchor[0] + 1; M <= f.hi[0] && !f.isAborted(); M++ {
+			if reached[M] {
+				emptyRun = 0
+				continue
+			}
+			var probes [][]int
+			for _, m := range minorSet {
+				for _, p := range patchSet {
+					c := make([]int, P)
+					c[0], c[1] = M, m
+					if P >= 3 {
+						c[2] = p
+					}
+					probes = append(probes, c)
+				}
+			}
+			pi := 0
+			f.probeParallel(func() ([]int, bool) {
+				if pi < len(probes) {
+					pc := probes[pi]
+					pi++
+					return pc, true
+				}
+				return nil, false
+			}, 0) // stop=0: 不因 miss 截断, 跑完该主版本的全部入口
+			found := false
+			for _, pc := range probes {
+				if f.hitExists(f.render(pc)) {
+					majorHits = append(majorHits, M)
+					found = true
+					break
+				}
+			}
+			if found {
+				emptyRun = 0
+			} else {
+				emptyRun++
+				if emptyRun >= f.o.frontStop {
+					break
+				}
+			}
+		}
+		sort.Ints(majorHits)
+	}
 
 	// ---- 副版本前沿 + 补丁 ----
 	for _, M := range majorHits {

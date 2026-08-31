@@ -51,6 +51,10 @@ var (
 	reUUID        = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	reLongNumPath = regexp.MustCompile(`/\d{7,}(/|\.)`)
 	reBuildSeq    = regexp.MustCompile(`[Bb]uild\d{4,}|[._-]\d{6,}`)
+	// 查询串里的签名/鉴权参数: 换版本会使签名失效(403), 不可遍历。
+	// 覆盖 CloudFront(Key-Pair-Id/Signature)、S3(X-Amz-Signature)、OSS、
+	// 七牛(q-sign)、通用 token/sign/auth_key 等。
+	reQuerySig = regexp.MustCompile(`(?i)([?&](x-?amz-|key-pair-id|signature|awsaccesskeyid|q-sign|ossaccesskeyid|accesskeysecret|security-token|x-?oss-)=[^&]*|[?&](sign|token|auth_key|authkey|access_token|secret|sig)=)`)
 	// stdVersionRe 用于 isTraversable 判断"路径是否已有点分隔的独立版本号"。
 	stdVersionRe = regexp.MustCompile(`\d+(?:\.\d+){1,5}`)
 )
@@ -58,6 +62,11 @@ var (
 // isTraversable 判断 URL 是否适合版本遍历。
 // 带签名/随机字符/哈希目录的 URL(如 QQ 安装包)无法遍历, 返回 false 及原因。
 func isTraversable(u string) (bool, string) {
+	// 先查查询串签名参数(在剥离 query 前): CloudFront/OSS/S3 等带签名的直链,
+	// 换版本号会使签名失效返回 403, 无法遍历。
+	if reQuerySig.MatchString(u) {
+		return false, "URL 含签名/鉴权查询串(换版本签名即失效), 不可遍历; 仅验证当前地址可用 -verify"
+	}
 	path := u
 	if i := strings.Index(path, "://"); i >= 0 {
 		path = path[i+3:]
