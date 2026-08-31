@@ -61,6 +61,7 @@ type options struct {
 }
 
 func parseFlags() *options {
+	flag.Usage = usage
 	o := &options{}
 	flag.StringVar(&o.url, "url", "", "下载地址(含版本号, 或含 {v} 占位符)")
 	flag.StringVar(&o.from, "from", "0.0.0", "起始版本(含)")
@@ -94,33 +95,71 @@ func parseFlags() *options {
 
 func usage() {
 	w := flag.CommandLine.Output()
-	fmt.Fprint(w, `ov — 下载地址版本号探测工具
+	fmt.Fprint(w, `ov — 从一条下载链接枚举出所有可下载版本
 
 用法:
   ov [选项] <下载地址>
-  ov [选项] -url <下载地址>
 
-自动识别地址中的版本号(标准版本/日期/纯数字/字母混合, -mode 配置),
-默认 smart 策略: 历史区(0..已知版本)全量枚举 + 前沿区逐维度生长探测
-(主/次版本前沿, 连续 -front-stop 次未命中即停; 命中基座再补丁探索),
-避免无脑枚举整个 200x200x200 而命中率极低。
-探测细节: HEAD 快探判断存在; 响应头已表明是下载文件(attachment 处置 /
-明确二进制且体积达标)时直接确认、不做 GET; 其余 2xx 由独立校验队列并发
-GET 只读开头 2KB, 排除"假 200"文本错误页(HTML/JSON), 按魔法字节/非文本判定。
-URL 中多个版本号会同时替换; 带签名/随机串的 URL 会提示不可遍历。
+把一个带版本号的下载链接丢进来, 自动识别版本号并枚举
+同系列的所有可下载版本(HEAD 快探 + 魔数校验, 自动排除假 200)。
+默认动态扩展: 历史区枚举 + 广撒网主版本 + 前沿生长, 无需指定范围。
 
-示例:
-  ov "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.4-cn.dmg"
-  ov -from 1.10.0 -sizes "https://host/app-{v}-setup.dmg"
-  ov -mode num "https://app-download.xaminim.com/xingye-android-release/754/xingye.apk"
-  ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
+常用示例:
+  # 最基本: 自动识别 3.10.2 并枚举全部版本
+  ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
+
+  # 只要某个区间
+  ov -from 1.5.0 -to 2.0.0 "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.4-cn.dmg"
+
+  # 只看某条链接是否可下载(不枚举)
   ov -verify "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg?download_id=xxx"
-  ov -tls-fingerprint chrome "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
-  ov -path-variants "https://host/releases/3.10.2/macos-x64/App-3.10.2-mac-x64.dmg"   # 跨发布目录布局漂移, 也能探到旧版扁平路径
 
-选项:
+  # 输出大小与类型, 新版本在前
+  ov -sizes -reverse "https://download.manus.im/Manus-Setup-1.7.2.dmg"
+
+  # 从一个平台的链接找到其他平台的下载地址
+  ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
+
+  # 发布目录改过版(旧版少一层子目录)也能找回旧版
+  ov -path-variants "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
+
+  # 慢网络: 降低并发、收紧超时
+  ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
+
+主要选项:
+  -c N              并发探测数 (默认 50)
+  -from VER         起始版本 (默认 0.0.0)
+  -to VER           结束版本 (默认按地址自动推断)
+  -mode M           版本格式: auto|std|date|num|alnum (默认 auto)
+  -strategy S       smart=动态扩张(默认) | exhaust=全量枚举到 -to
+  -sizes            输出文件大小(字节)与类型
+  -reverse          结果按新到旧输出(默认旧到新)
+  -o FILE           结果写入文件(默认标准输出)
+  -q                关闭进度输出
+  -url URL          用 -url 传下载地址(等价于位置参数)
+
+验证相关:
+  -verify           只验证单个 URL 是否可下载, 不做版本枚举
+  -strict           仅接受已知安装包魔数(严格模式)
+  -minsize N        最小文件大小(字节), 0 关闭
+  -k                跳过 TLS 证书校验
+
+高级:
+  -platform         从给定 URL 探测其他平台/架构变体
+  -path-variants    主路径 404 时回退通用路径变体(去子目录/换架构名)
+  -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
+  -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
+  -timeout D        单请求超时 (默认 10s)
+  -retry N          网络错误/429/5xx 的重试次数 (默认 1)
+  -ua S             User-Agent
+
+调优(一般不需要动):
+  -stop N           滚动窗口: 连续未命中多少次停止 (默认 200)
+  -front-stop N     前沿生长连续未命中停止阈值 (默认 5)
+  -universe N       版本分量最大值 (默认 199)
+  -max N            探测请求总量上限 (默认 500000)
+  -beyond N         已知版本之后再探 N 个更新 (默认 3)
 `)
-	flag.PrintDefaults()
 }
 
 func fatal(format string, a ...any) {
