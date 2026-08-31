@@ -371,9 +371,28 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 		mm int
 		c  chan bool
 	}
+	// 混合深度探测: 与最近已知副版本相邻(frontStop 内)的候选做 3 补丁深探,
+	// 覆盖"只有 .1/.2、无 .0 基座"的跳号副版本; 远离已知副版本的连续空白只探 .0
+	// (大概率真空), 高延迟网络下既保发现又少打请求。
+	lastFound := -1
+	for m := range skip {
+		if m > lastFound {
+			lastFound = m
+		}
+	}
 	launch := func(mm int) *fut {
 		c := make(chan bool, 1)
-		go func() { c <- f.probeMinorExists(M, mm) }()
+		deep := len(f.hi) >= 3 && (lastFound < 0 || mm-lastFound <= f.o.frontStop)
+		go func() {
+			if deep {
+				c <- f.probeMinorExists(M, mm)
+			} else {
+				comp := make([]int, len(f.hi))
+				comp[0], comp[1] = M, mm
+				hit, _ := f.probe(comp)
+				c <- hit
+			}
+		}()
 		return &fut{mm: mm, c: c}
 	}
 
@@ -386,6 +405,7 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 		for !f.isAborted() && mm <= hi && len(window) < lookahead && miss < stop {
 			if skip[mm] {
 				hits = append(hits, mm)
+				lastFound = mm
 				miss = 0
 			} else {
 				window = append(window, launch(mm))
@@ -400,6 +420,9 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 		hit := <-fu.c
 		if hit {
 			hits = append(hits, fu.mm)
+			if fu.mm > lastFound {
+				lastFound = fu.mm
+			}
 			miss = 0
 		} else {
 			miss++
@@ -416,12 +439,12 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 }
 
 // sparseMajorCandidates 生成"广撒网"的候选主版本号(升序去重):
-//  1. 近锚点稠密: [anchor-D, anchor+D] 每个值;
-//  2. 中程步长 2: 直到 anchor+midBand;
-//  3. 整数倍撒点: 5/10 的倍数(只到 hi 与 midBand 的较小者, 避免覆盖整个 universe);
-//  4. 年份带: 另一套编号体系(2021..2030 或锚点±4), 不受 universe 限制。
+//  1. 近锚点稠密: [anchor-D, anchor+D] 每个值(真实产品的新主版本几乎都在此区间);
+//  2. 远端尾点: 每隔 5 撒一个, 到 anchor+D+20 为止(少数跳号大版本);
+//  3. 大锚点(>=20)加 5/10 整数倍点;
+//  4. 年份带: 年份式锚点±4; std 锚点只撒当前年份附近(+1/0/-1)。
 //
-// 整体上限 capCount 个候选, 使"广撒网"成本稳定在几十次而非上千。
+// 高延迟网络上每个 404 都贵, 因此刻意不铺密: 整体上限 capCount 个候选。
 func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]bool) []int {
 	set := map[int]bool{}
 	add := func(m int) {
@@ -441,17 +464,17 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 	for m := anchor[0] - D; m <= anchor[0]+D; m++ {
 		add(m)
 	}
-	midBand := anchor[0] + D + 25
-	for m := anchor[0] + D + 1; m <= midBand; m += 2 {
+	// 远端尾点: 隔 5 撒到 D+20。
+	tailHi := anchor[0] + D + 20
+	for m := anchor[0] + D + 5; m <= tailHi; m += 5 {
 		add(m)
 	}
-	// 整数倍只撒到近端范围, 不覆盖整个 universe。
-	// 小锚点(主版本 <20)下 5/10 倍数的远端主版本基本不存在, 属噪声, 仅大锚点启用。
+	// 大锚点(主版本 >=20)加 5/10 整数倍点(小锚点下属噪声)。
 	if anchor[0] >= 20 {
-		for m := 5; m <= hi[0] && m <= midBand+D; m += 5 {
+		for m := 5; m <= hi[0] && m <= anchor[0]+D+20; m += 5 {
 			add(m)
 		}
-		for m := 10; m <= hi[0] && m <= midBand+D; m += 10 {
+		for m := 10; m <= hi[0] && m <= anchor[0]+D+20; m += 10 {
 			add(m)
 		}
 	}
@@ -495,7 +518,7 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 // 覆盖小 minor/patch 的常见首发布点: X.0.0 / X.0.1 / X.1.0 / X.2.0。
 // ({1,1} 作为"主版本首发"极罕见, 省略以省探测; 它会在后续稠密展开中被顺带探到。)
 func majorEntryProbes(M int, P int, anchor []int) [][]int {
-	shape := [][2]int{{0, 0}, {0, 1}, {1, 0}, {2, 0}}
+	shape := [][2]int{{0, 0}, {0, 1}, {1, 0}}
 	var out [][]int
 	seen := map[[2]int]bool{}
 	for _, e := range shape {
@@ -659,6 +682,10 @@ func computeHi(anchor []int, o *options) []int {
 	return hi
 }
 
+// wideNetBudget 广撒网投机探测的总墙钟预算: 高速网络下数秒即可撒完全部候选;
+// 高延迟网络下到点优雅收尾, 不让投机探测无限拖时间。
+const wideNetBudget = 12 * time.Second
+
 // run 执行前沿探索。
 func (f *frontier) run(anchor []int) {
 	P := len(anchor)
@@ -677,102 +704,126 @@ func (f *frontier) run(anchor []int) {
 	}
 	majorHits := f.scanDim(buildMajor, anchor[0], f.hi[0], majors)
 
-	// 广撒网(wide net): 稀疏探测一批候选主版本(近锚点稠密 + 远端稀疏撒点 + 年份带),
-	// 逐候选"早停"探测: 命中任一代表性入口即认为该主版本存在(已存在的主版本只花 1 次)。
-	// 命中的主版本纳入, 后续按主版本稠密展开。总请求量几十到一两百。
+	// ---- 副版本前沿 + 补丁 ----
+	// 锚点/历史主版本的副版本+补丁扫描与广撒网互相独立, 并行执行,
+	// 高延迟网络上不再白白串一轮等待; 广撒网新发现的主版本边发现边开扫。
+	var scanWG sync.WaitGroup
+	startScan := func(M int) {
+		scanWG.Add(1)
+		go func() {
+			defer scanWG.Done()
+			f.scanMajor(M, anchor, P, minors, patches)
+		}()
+	}
+	for _, M := range majorHits {
+		if !f.isAborted() {
+			startScan(M)
+		}
+	}
+	// 广撒网节奏化 + 墙钟预算(见上), 命中的主版本即时开扫。
 	if P >= 2 {
 		reached := map[int]bool{}
 		for _, M := range majorHits {
 			reached[M] = true
 		}
 		cands := sparseMajorCandidates(anchor, f.o, f.hi, reached)
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		sem := make(chan struct{}, f.o.conc)
-		for _, M := range cands {
-			if f.isAborted() {
+		wave := f.o.conc
+		if wave < 1 {
+			wave = 1
+		}
+		netStart := time.Now()
+		for i := 0; i < len(cands); {
+			if f.isAborted() || time.Since(netStart) > wideNetBudget {
 				break
 			}
-			sem <- struct{}{}
-			wg.Add(1)
-			go func(M int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if f.probeMajorExists(M, P, anchor) {
-					mu.Lock()
-					if !reached[M] {
-						reached[M] = true
-						majorHits = append(majorHits, M)
+			var wg sync.WaitGroup
+			var wmu sync.Mutex
+			end := i + wave
+			if end > len(cands) {
+				end = len(cands)
+			}
+			for ; i < end; i++ {
+				M := cands[i]
+				wg.Add(1)
+				go func(M int) {
+					defer wg.Done()
+					if f.probeMajorExists(M, P, anchor) {
+						wmu.Lock()
+						if !reached[M] {
+							reached[M] = true
+							majorHits = append(majorHits, M)
+							startScan(M)
+						}
+						wmu.Unlock()
 					}
-					mu.Unlock()
-				}
-			}(M)
+				}(M)
+			}
+			wg.Wait()
 		}
-		wg.Wait()
-		sort.Ints(majorHits)
+	}
+	scanWG.Wait()
+	sort.Ints(majorHits)
+}
+
+// scanMajor 对一个主版本 M 做副版本扫描 + 稀疏副版本撒网 + 补丁填充,
+// 结果写入 f.hits(线程安全)。可对多个主版本并行调用。
+func (f *frontier) scanMajor(M int, anchor []int, P int,
+	minors map[int]map[int]bool, patches map[[2]int]map[int]bool) {
+	ms := minors[M]
+	if ms == nil {
+		ms = map[int]bool{}
+	}
+	if P >= 2 && M == anchor[0] {
+		ms[anchor[1]] = true
+	}
+	var minorHits []int
+	if P >= 2 {
+		// 副版本扫描按补丁 0/1/2 早停探测, 覆盖"只有 .1/.2、无 .0 基座"的副版本。
+		// 历史区已命中的副版本在 skip 中, 直接计入不再探测。
+		minorHits = f.scanMinorsPatchAware(M, ms)
+		// 稀疏副版本撒网: 抓稠密扫描(连空即停)够不到的跳号副版本。
+		knownMinors := map[int]bool{}
+		for _, mm := range minorHits {
+			knownMinors[mm] = true
+		}
+		for _, mm := range f.sparseMinorProbe(M, knownMinors) {
+			if !knownMinors[mm] {
+				knownMinors[mm] = true
+				minorHits = append(minorHits, mm)
+			}
+		}
+		sort.Ints(minorHits)
+	} else {
+		minorHits = []int{0}
 	}
 
-	// ---- 副版本前沿 + 补丁 ----
-	for _, M := range majorHits {
+	for _, mm := range minorHits {
 		if f.isAborted() {
 			return
 		}
-		ms := minors[M]
-		if ms == nil {
-			ms = map[int]bool{}
+		// 需要补丁前沿的基座: 锚点的 (主,副) 基座、高于锚点的前沿基座,
+		// 以及任何"非种子新发现"的基座(如撒网抓到的跳号副版本)。
+		isFront := M != anchor[0] || P < 3 || (M == anchor[0] && mm > anchor[1])
+		isAnchorBase := M == anchor[0] && mm == anchor[1]
+		seeded := P >= 2 && minors[M] != nil && minors[M][mm]
+		isNewBase := !seeded && !isAnchorBase
+		if P < 3 || (!isFront && !isAnchorBase && !isNewBase) {
+			continue
 		}
-		if P >= 2 && M == anchor[0] {
-			ms[anchor[1]] = true
+		pSet := patches[[2]int{M, mm}]
+		if pSet == nil {
+			pSet = map[int]bool{}
 		}
-		var minorHits []int
-		if P >= 2 {
-			// 副版本扫描按补丁 0/1/2 早停探测, 覆盖"只有 .1/.2、无 .0 基座"的副版本。
-			// 历史区已命中的副版本在 skip 中, 直接计入不再探测。
-			minorHits = f.scanMinorsPatchAware(M, ms)
-			// 稀疏副版本撒网: 抓稠密扫描(连空即停)够不到的跳号副版本。
-			knownMinors := map[int]bool{}
-			for _, mm := range minorHits {
-				knownMinors[mm] = true
-			}
-			for _, mm := range f.sparseMinorProbe(M, knownMinors) {
-				if !knownMinors[mm] {
-					knownMinors[mm] = true
-					minorHits = append(minorHits, mm)
-				}
-			}
-			sort.Ints(minorHits)
-		} else {
-			minorHits = []int{0}
+		lo := 0
+		if isAnchorBase {
+			lo = anchor[2] + 1 // 锚点基座从已知补丁+1 起, 找更新的补丁
 		}
-
-		for _, mm := range minorHits {
-			if f.isAborted() {
-				return
-			}
-			// 需要补丁前沿的基座: 锚点的 (主,副) 基座、高于锚点的前沿基座,
-			// 以及任何"非种子新发现"的基座(如撒网抓到的跳号副版本)。
-			isFront := M != anchor[0] || P < 3 || (M == anchor[0] && mm > anchor[1])
-			isAnchorBase := M == anchor[0] && mm == anchor[1]
-			seeded := P >= 2 && minors[M] != nil && minors[M][mm]
-			isNewBase := !seeded && !isAnchorBase
-			if P < 3 || (!isFront && !isAnchorBase && !isNewBase) {
-				continue
-			}
-			pSet := patches[[2]int{M, mm}]
-			if pSet == nil {
-				pSet = map[int]bool{}
-			}
-			lo := 0
-			if isAnchorBase {
-				lo = anchor[2] + 1 // 锚点基座从已知补丁+1 起, 找更新的补丁
-			}
-			buildPatch := func(pz int) []int {
-				c := make([]int, P)
-				c[0], c[1], c[2] = M, mm, pz
-				return c
-			}
-			f.scanDim(buildPatch, lo, f.hi[2], pSet)
+		buildPatch := func(pz int) []int {
+			c := make([]int, P)
+			c[0], c[1], c[2] = M, mm, pz
+			return c
 		}
+		f.scanDim(buildPatch, lo, f.hi[2], pSet)
 	}
 }
 
