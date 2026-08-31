@@ -24,6 +24,7 @@ type probeResult struct {
 	size   int64 // 文件大小, -1 未知
 	kind   string
 	status int
+	url    string // 实际命中的 URL(路径变体启用时可能与主模板不同)
 }
 
 func notFoundResult(kind string, size int64, status int) probeResult {

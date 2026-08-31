@@ -151,9 +151,8 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 		f.aborted.Store(true)
 		return false, false
 	}
-	u := strings.ReplaceAll(f.tpl, "{v}", v)
-	r := probeURLWithQueryFallback(f.hc, f.o, u)
-	if r.found && (r.size < 0 || r.size >= f.o.minSize) {
+	r := probeTemplate(f.hc, f.o, f.tpl, v)
+	if usableHit(f.o, r) {
 		f.mu.Lock()
 		_, exists := f.hits[v]
 		if !exists {

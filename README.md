@@ -140,6 +140,7 @@ kimi mac → windows exe。组合数上限保护（128）。
 | `-verify` | false | 只验证给定 URL 是否可下载 |
 | `-platform` | false | 高级模式：发现其他平台/架构的下载地址 |
 | `-force-tpl` | false | 跳过不可遍历检查，强制模板模式（需地址含 `{v}`） |
+| `-path-variants` | false | 主形态 404 时试探通用路径变体（去掉一层发布子目录 / 同 OS 换架构），用于跨发布目录布局漂移找回旧版 URL |
 | `-ua` | `Mozilla/5.0 (compatible; ov-prober/1.0)` | User-Agent |
 
 ## 实测结果

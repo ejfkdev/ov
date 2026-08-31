@@ -57,6 +57,7 @@ type options struct {
 	forceTpl      bool
 	reverse       bool
 	tlsFingerprint string // TLS 指纹伪装: chrome、firefox、ios 等
+	pathVariants   bool   // 主形态 miss 时试探通用路径变体(应对发布目录改版/改名)
 }
 
 func parseFlags() *options {
@@ -86,6 +87,7 @@ func parseFlags() *options {
 	flag.BoolVar(&o.forceTpl, "force-tpl", false, "跳过不可遍历检查, 强制按模板探测(可用于已含 {v} 的地址)")
 	flag.BoolVar(&o.reverse, "reverse", false, "结果按版本语义降序输出(从新到旧), 默认升序(从早到晚)")
 	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等(默认原生)")
+	flag.BoolVar(&o.pathVariants, "path-variants", false, "候选主形态 404 时, 试探通用路径变体(平台/架构 token 替换、去掉一层发布子目录)")
 	flag.Parse()
 	return o
 }
@@ -113,6 +115,7 @@ URL 中多个版本号会同时替换; 带签名/随机串的 URL 会提示不�
   ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
   ov -verify "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg?download_id=xxx"
   ov -tls-fingerprint chrome "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
+  ov -path-variants "https://host/releases/3.10.2/macos-x64/App-3.10.2-mac-x64.dmg"   # 跨发布目录布局漂移, 也能探到旧版扁平路径
 
 选项:
 `)
@@ -476,10 +479,9 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		go func() {
 			defer wg.Done()
 			for v := range jobs {
-				u := strings.ReplaceAll(tpl, "{v}", v)
-				r := probeURLWithQueryFallback(hc, o, u)
+				r := probeTemplate(hc, o, tpl, v)
 				probed.Add(1)
-				if r.found && (r.size < 0 || r.size >= o.minSize) {
+				if usableHit(o, r) {
 					mu.Lock()
 					if _, exists := found[v]; !exists {
 						found[v] = r
@@ -549,8 +551,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	count := 0
 	for _, v := range keys {
 		count++
-		u := strings.ReplaceAll(tpl, "{v}", v)
-		fmt.Fprintln(out, u)
+		fmt.Fprintln(out, resolvedURL(tpl, v, found[v]))
 		if o.sizes {
 			fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(found[v].size), found[v].kind)
 		}
@@ -608,6 +609,39 @@ func printSizes(o *options, r probeResult) {
 	if o.sizes {
 		fmt.Printf("\t%s\t%s", sizeText(r.size), r.kind)
 	}
+}
+
+// usableHit 报告探测结果是否算"可下载命中"(命中且满足 -minsize)。
+func usableHit(o *options, r probeResult) bool {
+	return r.found && (r.size < 0 || r.size >= o.minSize)
+}
+
+// resolvedURL 返回某版本实际命中的 URL: 有路径变体时用变体 URL, 否则按主模板渲染。
+func resolvedURL(tpl, v string, r probeResult) string {
+	if r.url != "" {
+		return r.url
+	}
+	return strings.ReplaceAll(tpl, "{v}", v)
+}
+
+// probeTemplate 对一个版本按主模板探测 URL; 若开启 -path-variants 且主形态未命中,
+// 再低成本试探通用路径变体(平台/架构 token 替换、去掉一层发布子目录),
+// 以应对发布目录结构随版本演进变化(旧版无子目录/不同架构名)。返回含实际命中 URL 的结果。
+func probeTemplate(hc *http.Client, o *options, tpl, v string) probeResult {
+	u := strings.ReplaceAll(tpl, "{v}", v)
+	r := probeURLWithQueryFallback(hc, o, u)
+	r.url = u
+	if usableHit(o, r) || !o.pathVariants {
+		return r
+	}
+	for _, pv := range pathVariants(u)[1:] { // [0] 即主形态, 已探过
+		rv := probeURLWithQueryFallback(hc, o, pv)
+		if usableHit(o, rv) {
+			rv.url = pv
+			return rv
+		}
+	}
+	return r
 }
 
 // probeURLWithRetry 带重试的探测(网络错误/429/5xx 重试)。
@@ -718,8 +752,7 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 		mu.Unlock()
 		if ok {
 			count++
-			u := strings.ReplaceAll(tpl, "{v}", v)
-			fmt.Fprintln(out, u)
+			fmt.Fprintln(out, resolvedURL(tpl, v, r))
 			if o.sizes {
 				fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
 			}
