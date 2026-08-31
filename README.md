@@ -65,17 +65,21 @@ Build 号或长数字序列的 URL 无法枚举，直接提示并退出。
 确认可枚举时可 `-force-tpl` 强制使用 `{v}` 模板。
 纯 8 位日期（yyyymmdd）不作为默认可枚举对象，同样走 `-force-tpl -from -to`。
 
-### 3. 探测（HEAD 优先 + GET 验证）
+### 3. 探测（HEAD 快探 + 异步 GET 校验）
 
 1. **HEAD** 请求：404 直接判不存在（绝大多数候选在此结束，极快）；
-2. HEAD 2xx（可能是"假 200"错误页）或不支持 HEAD（405/403/5xx）→ **GET + `Range: bytes=0-2047`**，
-   只读开头 2KB：
+2. HEAD 响应头已表明是下载文件时**直接确认、跳过 GET**：
+   - `Content-Disposition: attachment`；
+   - 或体积 ≥ 1 MiB 且 Content-Type 不像文本（真实安装包均为 MB 级二进制，
+     "假 200"几乎总是小体积文本页）。`-strict` 下不跳过（必须读魔数）。
+3. 其余 2xx（可能"假 200"）或不支持 HEAD（405/403/5xx）→ 由**独立校验队列**
+   并发 **GET + `Range: bytes=0-2047`** 只读开头 2KB，不阻塞发现流水线：
    - 内容为文本（HTML/JSON 错误页）→ 判为不可下载；
    - 内容非文本（压缩包/安装包魔法字节）→ 命中；
-3. 逐字节判断已知魔法：zip/apk/jar、ELF、MZ(exe)、mach-o、7z/rar/pdf、gzip/bzip2/xz、tar、dmg、deb/ar，
+4. 逐字节判断已知魔法：zip/apk/jar、ELF、MZ(exe)、mach-o、7z/rar/pdf、gzip/bzip2/xz、tar、dmg、deb/ar，
    `-sizes` 可查看大小与类型；
-4. 416 视为存在（空文件）；网络错误/429/5xx 自动重试（`-retry`）；
-5. 带 `?query` 的 URL 未命中时会**去掉参数再试一次**（kimi 的 `?download_id=` 场景）。
+5. 416 视为存在（空文件）；网络错误/429/5xx 自动重试（`-retry`）；
+6. 带 `?query` 的 URL 未命中时会**去掉参数再试一次**（kimi 的 `?download_id=` 场景）。
 
 ### 4. 版本枚举与探测策略（`-strategy`）
 

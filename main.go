@@ -104,8 +104,9 @@ func usage() {
 默认 smart 策略: 历史区(0..已知版本)全量枚举 + 前沿区逐维度生长探测
 (主/次版本前沿, 连续 -front-stop 次未命中即停; 命中基座再补丁探索),
 避免无脑枚举整个 200x200x200 而命中率极低。
-探测细节: HEAD 优先; 可疑状态回退 GET+Range; 2xx 再 GET 读开头 2KB,
-排除"假 200"文本错误页(HTML/JSON), 按魔法字节/非文本判定真实安装包。
+探测细节: HEAD 快探判断存在; 响应头已表明是下载文件(attachment 处置 /
+明确二进制且体积达标)时直接确认、不做 GET; 其余 2xx 由独立校验队列并发
+GET 只读开头 2KB, 排除"假 200"文本错误页(HTML/JSON), 按魔法字节/非文本判定。
 URL 中多个版本号会同时替换; 带签名/随机串的 URL 会提示不可遍历。
 
 示例:
@@ -450,12 +451,20 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	if len(versions) > 0 {
 		fmt.Fprintf(os.Stderr, "识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
 	}
-	fmt.Fprintf(os.Stderr, "探测: %s ~ %s, 并发 %d\n",
-		joinCompsW(from, widths), joinCompsW(to, widths), o.conc)
+	if o.strategy == "exhaust" {
+		fmt.Fprintf(os.Stderr, "探测: %s ~ %s(全量枚举), 并发 %d\n",
+			joinCompsW(from, widths), joinCompsW(to, widths), o.conc)
+	} else {
+		// smart: 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
+		fmt.Fprintf(os.Stderr, "探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
+	}
 
-	// 并发探测。worker 持续从 jobs 取候选, 完成一个立刻开始下一个(不分批);
-	// 候选流式喂入。进度仅显示已发出的请求数与命中数, 不显示"预期总数"
-	// (滚动/前沿模式下每命中一个就动态扩展探测范围, 预期数无意义)。
+	// 并发探测(两段式: 发现 + 校验):
+	//  - 发现 worker 只做 HEAD 快探, 命中疑似即立刻把校验任务丢进独立的校验队列,
+	//    随后继续取下一个候选 —— 慢的 GET 魔数校验不会阻塞发现流水线;
+	//  - 校验 worker 池独立并发地做 GET+魔数判定(过滤"假 200"文本页), 一有疑似命中
+	//    就立即开始校验, 不必等整批发现完成。
+	// 进度显示已发现(疑似命中)数; 最终输出前等校验全部落定。
 	start := time.Now()
 	var probed atomic.Int64
 	var hitsFound atomic.Int64
@@ -472,6 +481,34 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		progMu.Unlock()
 	}
 
+	type verifyJob struct {
+		v    string
+		url  string
+		head probeResult
+	}
+	verifyJobs := make(chan verifyJob, 256)
+	var vwg sync.WaitGroup
+	for i := 0; i < o.conc; i++ {
+		vwg.Add(1)
+		go func() {
+			defer vwg.Done()
+			for job := range verifyJobs {
+				r := verifyHeadHit(hc, o, job.url, job.head)
+				mu.Lock()
+				if usableHit(o, r) {
+					// 校验通过: 用确认结果(真实 size/kind)覆盖疑似占位。
+					r.url = job.url
+					found[job.v] = r
+				} else if _, exists := found[job.v]; exists {
+					// 校验判定为"假 200"(文本错误页等): 撤销疑似命中。
+					delete(found, job.v)
+					hitsFound.Add(-1)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+
 	jobs := make(chan string, o.conc*4)
 	var wg sync.WaitGroup
 	for i := 0; i < o.conc; i++ {
@@ -479,15 +516,22 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		go func() {
 			defer wg.Done()
 			for v := range jobs {
-				r := probeTemplate(hc, o, tpl, v)
+				r := probeTemplateDiscover(hc, o, tpl, v)
 				probed.Add(1)
-				if usableHit(o, r) {
+				if r.found {
+					isNew := false
 					mu.Lock()
 					if _, exists := found[v]; !exists {
-						found[v] = r
-						hitsFound.Add(1)
+						found[v] = r // 先按疑似命中占位
+						isNew = true
 					}
 					mu.Unlock()
+					if isNew {
+						hitsFound.Add(1)
+						if !r.verified { // HEAD 已确认的无需再 GET 校验
+							verifyJobs <- verifyJob{v: v, url: r.url, head: r}
+						}
+					}
 				}
 				report()
 			}
@@ -501,6 +545,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		close(jobs)
 	}()
 	wg.Wait()
+	close(verifyJobs)
+	vwg.Wait() // 等所有魔数校验完成, found 里只剩真实可下载的版本
 	if showProg {
 		fmt.Fprintln(os.Stderr)
 	}
@@ -637,6 +683,53 @@ func probeTemplate(hc *http.Client, o *options, tpl, v string) probeResult {
 	for _, pv := range pathVariants(u)[1:] { // [0] 即主形态, 已探过
 		rv := probeURLWithQueryFallback(hc, o, pv)
 		if usableHit(o, rv) {
+			rv.url = pv
+			return rv
+		}
+	}
+	return r
+}
+
+// probeHeadRetry 仅 HEAD 的发现探测, 对瞬时错误(网络/429/5xx)重试。
+// 返回 found 表示"疑似命中, 需后续 GET 校验"。
+func probeHeadRetry(hc *http.Client, o *options, u string) probeResult {
+	var last probeResult
+	for attempt := 0; ; attempt++ {
+		last = probeURLHeadOnly(hc, u, o.ua)
+		sus := last.status >= 500 || last.status == 429 || (last.status == 0 && last.kind == "网络错误")
+		if !sus || attempt >= o.retry {
+			return last
+		}
+		time.Sleep(time.Duration(400*(1<<attempt)) * time.Millisecond)
+	}
+}
+
+// probeHeadQueryFallback 仅 HEAD 的发现探测, 带查询串兜底。
+func probeHeadQueryFallback(hc *http.Client, o *options, u string) probeResult {
+	r := probeHeadRetry(hc, o, u)
+	if !r.found {
+		if i := strings.IndexByte(u, '?'); i > 0 {
+			u2 := u[:i]
+			if u2 != u {
+				r = probeHeadRetry(hc, o, u2)
+			}
+		}
+	}
+	return r
+}
+
+// probeTemplateDiscover 仅做 HEAD 发现(含路径变体试探), 不做 GET 魔数校验。
+// 返回疑似命中(待校验)的结果, 其 url 为命中的具体形态; 真伪由校验队列判定。
+func probeTemplateDiscover(hc *http.Client, o *options, tpl, v string) probeResult {
+	u := strings.ReplaceAll(tpl, "{v}", v)
+	r := probeHeadQueryFallback(hc, o, u)
+	r.url = u
+	if r.found || !o.pathVariants {
+		return r
+	}
+	for _, pv := range pathVariants(u)[1:] {
+		rv := probeHeadQueryFallback(hc, o, pv)
+		if rv.found {
 			rv.url = pv
 			return rv
 		}

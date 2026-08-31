@@ -15,16 +15,22 @@ import (
 
 const magicProbeSize = 2048
 
+// headTrustSize: HEAD 已给出明确二进制 Content-Type 且大小不低于该值时,
+// 直接信任 HEAD 结论、省去慢速 GET 魔数校验(真实安装包都是 MB 级, 假 200 文本页很小)。
+// -strict 模式下不启用(严格模式必须读到魔数字节)。
+const headTrustSize = int64(1 << 20) // 1 MiB
+
 // strictMagic 由 -strict 设置: 仅接受已知魔法字节(压缩包/安装包), 拒绝其他非文本。
 var strictMagic bool
 
 // probeResult 一次探测的结论。
 type probeResult struct {
-	found  bool
-	size   int64 // 文件大小, -1 未知
-	kind   string
-	status int
-	url    string // 实际命中的 URL(路径变体启用时可能与主模板不同)
+	found    bool
+	size     int64 // 文件大小, -1 未知
+	kind     string
+	status   int
+	url      string // 实际命中的 URL(路径变体启用时可能与主模板不同)
+	verified bool   // true=已确认真实可下载(无需再做 GET 校验); false=疑似, 待校验
 }
 
 func notFoundResult(kind string, size int64, status int) probeResult {
@@ -35,19 +41,63 @@ func foundResult(kind string, size int64, status int) probeResult {
 	return probeResult{found: true, size: size, kind: kind, status: status}
 }
 
-// headProbe 发 HEAD 请求, 返回状态码与 Content-Length。
-func headProbe(hc *http.Client, u, ua string) (int, int64, error) {
+// headProbe 发 HEAD 请求, 返回状态码、Content-Length、Content-Type 与 Content-Disposition。
+func headProbe(hc *http.Client, u, ua string) (int, int64, string, string, error) {
 	req, err := http.NewRequest(http.MethodHead, u, nil)
 	if err != nil {
-		return 0, -1, err
+		return 0, -1, "", "", err
 	}
 	req.Header.Set("User-Agent", ua)
 	resp, err := hc.Do(req)
 	if err != nil {
-		return 0, -1, err
+		return 0, -1, "", "", err
 	}
 	resp.Body.Close()
-	return resp.StatusCode, resp.ContentLength, nil
+	return resp.StatusCode, resp.ContentLength,
+		resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"), nil
+}
+
+// headTrustOK 报告能否仅凭 HEAD 响应头(状态 200 + 大小 + 类型 + 处置)就确认真实可下载。
+// 两个信号任一成立即可:
+//  1. Content-Disposition 含 attachment —— 服务器明确告之这是下载文件, 直接信任;
+//  2. 体积达到 headTrustSize 且 Content-Type 不像文本错误页(真实安装包都是 MB 级二进制,
+//     而"假 200"几乎总是小体积文本页)。
+//
+// -strict 下不启用(必须读魔数字节)。
+func headTrustOK(size int64, ct, disposition string) bool {
+	if strictMagic {
+		return false
+	}
+	if strings.Contains(strings.ToLower(disposition), "attachment") {
+		return true
+	}
+	if size < headTrustSize {
+		return false
+	}
+	return !ctLooksTextish(ct)
+}
+
+// ctLooksTextish 报告 Content-Type 是否像文本/网页(可能是"假 200"错误页)。
+// 返回 true 时不可仅凭 HEAD 信任, 必须 GET 读魔数校验。
+// 空 CT 或二进制容器(含 application/octet-stream)不视为文本。
+func ctLooksTextish(ct string) bool {
+	if ct == "" {
+		return false
+	}
+	ct = strings.ToLower(ct)
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if strings.HasPrefix(ct, "text/") {
+		return true
+	}
+	switch ct {
+	case "application/json", "application/javascript", "application/xml",
+		"xhtml+xml", "application/xhtml+xml", "application/x-www-form-urlencoded",
+		"image/svg+xml":
+		return true
+	}
+	return false
 }
 
 // getFirstBytes 发 GET + Range 只读开头 n 字节并立即关闭连接。
@@ -206,12 +256,55 @@ func min(a, b int) int {
 	return b
 }
 
+// probeURLHeadOnly 只做 HEAD 快速发现, 尽量不做 GET 魔数校验。
+// 返回的 found 表示命中; verified=true 表示 HEAD 已足够确认(明确二进制 CT 且体积达标),
+// 否则为疑似命中, 需后续 verifyHeadHit 用 GET 校验真伪(过滤"假 200"文本页)。
+// 这样发现流水线不被慢速 GET 阻塞; 大多数真实安装包仅凭 HEAD 即可确认。
+func probeURLHeadOnly(hc *http.Client, u, ua string) probeResult {
+	status, sizeHint, ct, disp, err := headProbe(hc, u, ua)
+	if err == nil && status == http.StatusNotFound {
+		return notFoundResult("404", -1, status)
+	}
+	if err != nil ||
+		status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
+		status == http.StatusForbidden || status == http.StatusTooManyRequests ||
+		status >= 500 || status == 0 {
+		// HEAD 不可用/状态可疑: 标记为需 GET 判定的疑似命中。
+		return probeResult{found: true, size: -1, kind: "待校验", status: status}
+	}
+	if status >= 200 && status < 300 {
+		// HEAD 响应头已表明是下载文件(attachment 处置 / 二进制+体积达标): 直接确认, 省去慢速 GET。
+		if headTrustOK(sizeHint, ct, disp) {
+			return probeResult{found: true, verified: true, size: sizeHint, kind: "HEAD 确认", status: status}
+		}
+		return probeResult{found: true, size: sizeHint, kind: "待校验", status: status}
+	}
+	if status == http.StatusRequestedRangeNotSatisfiable {
+		return probeResult{found: true, verified: true, size: 0, kind: "416 空文件", status: status}
+	}
+	return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
+}
+
+// verifyHeadHit 对疑似命中(或待判定)的 URL 做 GET+魔数校验, 判定是否真实可下载。
+// head 是之前 HEAD 的结果(提供 sizeHint 与状态)。
+func verifyHeadHit(hc *http.Client, o *options, u string, head probeResult) probeResult {
+	if head.status == http.StatusRequestedRangeNotSatisfiable {
+		return head // 416 已是确定结论
+	}
+	r := verifyGet(hc, u, o.ua, head.size)
+	if r.found && head.size > 0 && r.size <= 0 {
+		r.size = head.size
+	}
+	return r
+}
+
 // probeURL 完整探测一个 URL 是否可下载:
-//  1. HEAD 探测: 404 直接判不存在; 2xx 继续 GET 验证(防假 200);
+//  1. HEAD 探测: 404 直接判不存在; 响应头已表明是下载文件(attachment 处置 /
+//     二进制+体积达标)则直接确认(省 GET);
 //  2. HEAD 405/403/429/5xx/网络错误: 回退 GET+Range 只读开头字节判真;
-//  3. 最终以 GET 读到的开头字节为准: 非文本(安装包)才算命中。
+//  3. 其余 2xx 以 GET 读到的开头字节为准: 非文本(安装包)才算命中(防"假 200")。
 func probeURL(hc *http.Client, u, ua string) probeResult {
-	status, sizeHint, err := headProbe(hc, u, ua)
+	status, sizeHint, ct, disp, err := headProbe(hc, u, ua)
 
 	// HEAD 明确 404: 不存在。
 	if err == nil && status == http.StatusNotFound {
@@ -229,11 +322,15 @@ func probeURL(hc *http.Client, u, ua string) probeResult {
 
 	switch {
 	case status >= 200 && status < 300:
-		// HEAD 2xx: 存在或假 200, 用 GET 读开头字节验证。
+		// HEAD 响应头已表明是下载文件: 直接确认, 省去慢速 GET。
+		if headTrustOK(sizeHint, ct, disp) {
+			return probeResult{found: true, verified: true, size: sizeHint, kind: "HEAD 确认", status: status}
+		}
+		// 其余: 存在或假 200, 用 GET 读开头字节验证。
 		return verifyGet(hc, u, ua, sizeHint)
 	case status == http.StatusRequestedRangeNotSatisfiable:
 		// 416: 资源存在(空文件)。
-		return foundResult("416 空文件", 0, status)
+		return probeResult{found: true, verified: true, size: 0, kind: "416 空文件", status: status}
 	case status >= 400:
 		return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
 	default:
