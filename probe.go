@@ -41,6 +41,19 @@ func foundResult(kind string, size int64, status int) probeResult {
 	return probeResult{found: true, size: size, kind: kind, status: status}
 }
 
+// applyExtraHeaders 把 -H 设置的自定义请求头合并进请求(覆盖默认 UA 等)。
+func applyExtraHeaders(req *http.Request) {
+	if globalHeaders == nil {
+		return
+	}
+	for k, vs := range globalHeaders {
+		req.Header.Del(k)
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+}
+
 // headProbe 发 HEAD 请求, 返回状态码、Content-Length、Content-Type 与 Content-Disposition。
 func headProbe(hc *http.Client, u, ua string) (int, int64, string, string, error) {
 	req, err := http.NewRequest(http.MethodHead, u, nil)
@@ -48,6 +61,7 @@ func headProbe(hc *http.Client, u, ua string) (int, int64, string, string, error
 		return 0, -1, "", "", err
 	}
 	req.Header.Set("User-Agent", ua)
+	applyExtraHeaders(req)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, -1, "", "", err
@@ -109,6 +123,7 @@ func getFirstBytes(hc *http.Client, u, ua string, n int) (int, []byte, int64, st
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
+	applyExtraHeaders(req)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return 0, nil, -1, "", err

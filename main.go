@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -22,9 +23,16 @@ import (
 
 	tlsutil "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
+	"golang.org/x/net/proxy"
 )
 
 const defaultUserAgent = "Mozilla/5.0 (compatible; ov-prober/1.0)"
+
+// 由 -x / -H 设置的全局联网配置, 所有请求构造处统一应用。
+var (
+	globalProxyURL *url.URL
+	globalHeaders  http.Header
+)
 
 type Prober struct {
 	modes []*versionMode
@@ -56,8 +64,10 @@ type options struct {
 	beyond         int
 	forceTpl       bool
 	reverse        bool
-	tlsFingerprint string // TLS 指纹伪装: chrome、firefox、ios 等
-	pathVariants   bool   // 主形态 miss 时试探通用路径变体(应对发布目录改版/改名)
+	tlsFingerprint string   // TLS 指纹伪装: chrome、firefox、ios 等
+	pathVariants   bool     // 主形态 miss 时试探通用路径变体(应对发布目录改版/改名)
+	proxy          string   // HTTP(S)/SOCKS5 代理 (curl 风格 -x)
+	headers        []string // 自定义请求头 (curl 风格 -H, 可重复)
 }
 
 func parseFlags() *options {
@@ -89,8 +99,19 @@ func parseFlags() *options {
 	flag.BoolVar(&o.reverse, "reverse", false, "结果按版本语义降序输出(从新到旧), 默认升序(从早到晚)")
 	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等(默认原生)")
 	flag.BoolVar(&o.pathVariants, "path-variants", false, "候选主形态 404 时, 试探通用路径变体(平台/架构 token 替换、去掉一层发布子目录)")
+	flag.StringVar(&o.proxy, "x", "", "代理 (curl 风格): http://host:port 或 socks5://host:port")
+	flag.Var((*headerFlag)(&o.headers), "H", "自定义请求头 (curl 风格, 可重复): \"Name: Value\"")
 	flag.Parse()
 	return o
+}
+
+// headerFlag 收集可重复的 -H 参数。
+type headerFlag []string
+
+func (h *headerFlag) String() string { return strings.Join(*h, "; ") }
+func (h *headerFlag) Set(v string) error {
+	*h = append(*h, v)
+	return nil
 }
 
 func usage() {
@@ -148,6 +169,8 @@ func usage() {
   -platform         从给定 URL 探测其他平台/架构变体
   -path-variants    主路径 404 时回退通用路径变体(去子目录/换架构名)
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
+  -x PROXY          代理 (curl 风格): http://host:port 或 socks5://host:port
+  -H "Name: Value"  自定义请求头 (curl 风格, 可重复)
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
   -timeout D        单请求超时 (默认 10s)
   -retry N          网络错误/429/5xx 的重试次数 (默认 1)
@@ -170,8 +193,9 @@ func fatal(format string, a ...any) {
 // utlsRoundTripper 对 http.RoundTripper 的 uTLS 实现:
 // 替代标准库的 http.Transport, 在 TLS 握手阶段使用指定指纹。
 type utlsRoundTripper struct {
-	helloID tlsutil.ClientHelloID
-	skipTLS bool
+	helloID   tlsutil.ClientHelloID
+	skipTLS   bool
+	proxyDial proxy.Dialer // 非 nil 时经 HTTP CONNECT/SOCKS5 代理建立隧道
 }
 
 func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -186,8 +210,14 @@ func (r *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 	addr := net.JoinHostPort(host, port)
 
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	conn, err := dialer.Dial("tcp", addr)
+	var conn net.Conn
+	var err error
+	if r.proxyDial != nil {
+		conn, err = r.proxyDial.Dial("tcp", addr)
+	} else {
+		dialer := &net.Dialer{Timeout: 10 * time.Second}
+		conn, err = dialer.Dial("tcp", addr)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +304,7 @@ var fingerprints = map[string]tlsutil.ClientHelloID{
 }
 
 // newUTLSRoundTripper 根据指纹名称返回 http.RoundTripper，不支持时返回 nil。
-func newUTLSRoundTripper(name string, skipTLS bool) http.RoundTripper {
+func newUTLSRoundTripper(name string, skipTLS bool, proxyDial proxy.Dialer) http.RoundTripper {
 	if name == "" {
 		return nil
 	}
@@ -283,8 +313,9 @@ func newUTLSRoundTripper(name string, skipTLS bool) http.RoundTripper {
 		return nil
 	}
 	return &utlsRoundTripper{
-		helloID: id,
-		skipTLS: skipTLS,
+		helloID:   id,
+		skipTLS:   skipTLS,
+		proxyDial: proxyDial,
 	}
 }
 
@@ -305,12 +336,44 @@ func main() {
 	p := &Prober{modes: newVersionModes(modeSet(o.mode))}
 	strictMagic = o.strict
 
+	// -x 代理与 -H 自定义请求头(curl 风格)。
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	var proxyDial proxy.Dialer
+	if o.proxy != "" {
+		u, err := url.Parse(o.proxy)
+		if err != nil || u.Host == "" {
+			fatal("代理地址格式错误: %s (示例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080)", o.proxy)
+		}
+		globalProxyURL = u
+		proxyFunc = http.ProxyURL(u)
+		d, err := newProxyDialer(o.proxy)
+		if err != nil {
+			fatal("不支持的代理地址: %s (支持 http、https、socks5)", o.proxy)
+		}
+		proxyDial = d
+	}
+	for _, hs := range o.headers {
+		k, v, ok := strings.Cut(hs, ":")
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			fatal("请求头格式错误(应为 \"Name: Value\"): %s", hs)
+		}
+		if globalHeaders == nil {
+			globalHeaders = http.Header{}
+		}
+		globalHeaders.Add(k, strings.TrimSpace(v))
+	}
+
 	var transport http.RoundTripper
-	if t := newUTLSRoundTripper(o.tlsFingerprint, o.skipTLS); t != nil {
+	if t := newUTLSRoundTripper(o.tlsFingerprint, o.skipTLS, proxyDial); t != nil {
 		transport = t
 	} else {
+		proxyEnv := http.ProxyFromEnvironment
+		if proxyFunc != nil {
+			proxyEnv = proxyFunc
+		}
 		transport = &http.Transport{
-			Proxy:               http.ProxyFromEnvironment,
+			Proxy:               proxyEnv,
 			TLSClientConfig:     &tls.Config{InsecureSkipVerify: o.skipTLS}, //nolint:gosec
 			MaxIdleConns:        256,
 			MaxIdleConnsPerHost: 64,
