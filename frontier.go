@@ -105,8 +105,14 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 		} else if stop > 0 {
 			miss++
 			if miss >= stop {
-				for _, w := range window { // 丢弃在途(已发出的请求自然完成)
-					<-w.c
+				// 触发截断: 已发射的在途探测自然完成, 把结果也收集进来,
+				// 以免错过截断点之后恰好命中的版本(并发预取会提前发射)。
+				for _, w := range window {
+					oo := <-w.c
+					if oo.added {
+						f.reportHit()
+					}
+					out = append(out, oo.hit)
 				}
 				window = nil
 				genDone = true
@@ -178,6 +184,77 @@ func (f *frontier) hitExists(v string) bool {
 	return ok
 }
 
+// probeMajorExists 顺序探主版本 M 的代表性入口, 任一命中即认为该主版本存在并早停。
+// 命中的入口经 probe() 记入 hits(是真实可下载版本)。已存在的主版本因此只花 1 次探测。
+func (f *frontier) probeMajorExists(M, P int, anchor []int) bool {
+	for _, pc := range majorEntryProbes(M, P, anchor) {
+		if f.isAborted() {
+			return false
+		}
+		hit, _ := f.probe(pc)
+		if hit {
+			return true
+		}
+	}
+	return false
+}
+
+// sparseMinorProbe 对主版本 M 做稀疏副版本撒网, 抓"跳过 frontStop 间距"的远端副版本。
+// 稠密扫描(连续 -front-stop 次未命中即停)够不到稀疏间隔之外的副版本(如 0,1,2,9,10
+// 锚点在 2 时的 9/10); 这里在稠密上界之上按近端步长 + 少量远点撒一小批并早停式探测。
+// 返回命中的副版本号。成本受 cap(默认 8 个候选)约束。
+func (f *frontier) sparseMinorProbe(M int, knownMinors map[int]bool) []int {
+	if len(f.hi) < 2 {
+		return nil
+	}
+	hi := f.hi[1]
+	known := map[int]bool{}
+	last := -1
+	for m := range knownMinors {
+		known[m] = true
+		if m > last {
+			last = m
+		}
+	}
+	if last < 0 {
+		last = 0
+	}
+	step := f.o.frontStop
+	if step < 2 {
+		step = 2
+	}
+	cands := []int{}
+	seen := map[int]bool{}
+	add := func(m int) {
+		if m >= 0 && m <= hi && !known[m] && !seen[m] {
+			seen[m] = true
+			cands = append(cands, m)
+		}
+	}
+	// 近端: 稠密截断点之后一小段逐值补探。
+	for m := last + 1; m <= last+step && len(cands) < 8; m++ {
+		add(m)
+	}
+	// 远端: 按步长撒点直到上界(或达候选上限)。
+	for m := last + step + 1; m <= hi && len(cands) < 8; m += step {
+		add(m)
+	}
+	sort.Ints(cands)
+	var out []int
+	for _, m := range cands {
+		if f.isAborted() {
+			break
+		}
+		comp := make([]int, len(f.hi))
+		comp[0], comp[1] = M, m
+		hit, _ := f.probe(comp)
+		if hit {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // sparseMajorCandidates 生成"广撒网"的候选主版本号(升序去重):
 //  1. 近锚点稠密: [anchor-D, anchor+D] 每个值;
 //  2. 中程步长 2: 直到 anchor+midBand;
@@ -208,11 +285,14 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 		add(m)
 	}
 	// 整数倍只撒到近端范围, 不覆盖整个 universe。
-	for m := 5; m <= hi[0] && m <= midBand+D; m += 5 {
-		add(m)
-	}
-	for m := 10; m <= hi[0] && m <= midBand+D; m += 10 {
-		add(m)
+	// 小锚点(主版本 <20)下 5/10 倍数的远端主版本基本不存在, 属噪声, 仅大锚点启用。
+	if anchor[0] >= 20 {
+		for m := 5; m <= hi[0] && m <= midBand+D; m += 5 {
+			add(m)
+		}
+		for m := 10; m <= hi[0] && m <= midBand+D; m += 10 {
+			add(m)
+		}
 	}
 	if !(anchor[0] >= 1900 && anchor[0] <= 2100) {
 		for y := 2021; y <= 2030; y++ {
@@ -229,7 +309,7 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 	}
 	sort.Ints(out)
 	// 候选数硬上限: 保留最靠近锚点的 capCount 个。
-	capCount := 60
+	capCount := 45
 	if len(out) > capCount {
 		// 按 |m - anchor[0]| 排序后截取。
 		sort.Slice(out, func(i, j int) bool {
@@ -249,9 +329,10 @@ func sparseMajorCandidates(anchor []int, o *options, hi []int, reached map[int]b
 }
 
 // majorEntryProbes 为一个主版本 M 构造代表性入口候选 (M, m, p), 命中即认为该主版本存在。
-// 覆盖小 minor/patch 的常见首发布点: X.0.0 / X.0.1 / X.1.0 / X.1.1 / X.2.0。
+// 覆盖小 minor/patch 的常见首发布点: X.0.0 / X.0.1 / X.1.0 / X.2.0。
+// ({1,1} 作为"主版本首发"极罕见, 省略以省探测; 它会在后续稠密展开中被顺带探到。)
 func majorEntryProbes(M int, P int, anchor []int) [][]int {
-	shape := [][2]int{{0, 0}, {0, 1}, {1, 0}, {1, 1}, {2, 0}}
+	shape := [][2]int{{0, 0}, {0, 1}, {1, 0}, {2, 0}}
 	var out [][]int
 	seen := map[[2]int]bool{}
 	for _, e := range shape {
@@ -434,37 +515,37 @@ func (f *frontier) run(anchor []int) {
 	majorHits := f.scanDim(buildMajor, anchor[0], f.hi[0], majors)
 
 	// 广撒网(wide net): 稀疏探测一批候选主版本(近锚点稠密 + 远端稀疏撒点 + 年份带),
-	// 每个候选主版本只试几个代表性入口。命中某个主版本即纳入, 后续按主版本稠密展开。
-	// 取代旧的"向上线性连空即停", 使 1.17.9 也能一次撒网探到 3.x / 8 / 10 / 2026 等远处区域,
-	// 而总请求量仅几十到一两百(每候选 2-3 个入口)。
+	// 逐候选"早停"探测: 命中任一代表性入口即认为该主版本存在(已存在的主版本只花 1 次)。
+	// 命中的主版本纳入, 后续按主版本稠密展开。总请求量几十到一两百。
 	if P >= 2 {
 		reached := map[int]bool{}
 		for _, M := range majorHits {
 			reached[M] = true
 		}
 		cands := sparseMajorCandidates(anchor, f.o, f.hi, reached)
-		var probes [][]int
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		sem := make(chan struct{}, f.o.conc)
 		for _, M := range cands {
-			probes = append(probes, majorEntryProbes(M, P, anchor)...)
-		}
-		if !f.isAborted() {
-			pi := 0
-			f.probeParallel(func() ([]int, bool) {
-				if pi < len(probes) {
-					pc := probes[pi]
-					pi++
-					return pc, true
-				}
-				return nil, false
-			}, 0) // stop=0: 入口探测互相独立, 不因 miss 截断, 全部撒完
-		}
-		for _, pc := range probes {
-			M := pc[0]
-			if !reached[M] && f.hitExists(f.render(pc)) {
-				majorHits = append(majorHits, M)
-				reached[M] = true
+			if f.isAborted() {
+				break
 			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(M int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if f.probeMajorExists(M, P, anchor) {
+					mu.Lock()
+					if !reached[M] {
+						reached[M] = true
+						majorHits = append(majorHits, M)
+					}
+					mu.Unlock()
+				}
+			}(M)
 		}
+		wg.Wait()
 		sort.Ints(majorHits)
 	}
 
@@ -488,6 +569,18 @@ func (f *frontier) run(anchor []int) {
 		var minorHits []int
 		if P >= 2 {
 			minorHits = f.scanDim(buildMinor, 0, f.hi[1], ms)
+			// 稀疏副版本撒网: 抓稠密扫描(连空即停)够不到的跳号副版本。
+			knownMinors := map[int]bool{}
+			for _, mm := range minorHits {
+				knownMinors[mm] = true
+			}
+			for _, mm := range f.sparseMinorProbe(M, knownMinors) {
+				if !knownMinors[mm] {
+					knownMinors[mm] = true
+					minorHits = append(minorHits, mm)
+				}
+			}
+			sort.Ints(minorHits)
 		} else {
 			minorHits = []int{0}
 		}
@@ -496,10 +589,13 @@ func (f *frontier) run(anchor []int) {
 			if f.isAborted() {
 				return
 			}
-			// 需要补丁前沿的基座: 锚点的 (主,副) 基座 或 高于锚点的前沿基座。
+			// 需要补丁前沿的基座: 锚点的 (主,副) 基座、高于锚点的前沿基座,
+			// 以及任何"非种子新发现"的基座(如撒网抓到的跳号副版本)。
 			isFront := M != anchor[0] || P < 3 || (M == anchor[0] && mm > anchor[1])
 			isAnchorBase := M == anchor[0] && mm == anchor[1]
-			if P < 3 || (!isFront && !isAnchorBase) {
+			seeded := P >= 2 && minors[M] != nil && minors[M][mm]
+			isNewBase := !seeded && !isAnchorBase
+			if P < 3 || (!isFront && !isAnchorBase && !isNewBase) {
 				continue
 			}
 			pSet := patches[[2]int{M, mm}]
