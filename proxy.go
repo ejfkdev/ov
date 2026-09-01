@@ -88,7 +88,7 @@ func httpConnectDialer(pu *url.URL) proxy.Dialer {
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			conn.Close()
-			return nil, fmt.Errorf("代理 CONNECT 失败: %s", resp.Status)
+			return nil, fmt.Errorf(tr("代理 CONNECT 失败: %s", "proxy CONNECT failed: %s"), resp.Status)
 		}
 		conn.SetDeadline(time.Time{})
 		return &tunnelConn{Conn: conn, br: br}, nil

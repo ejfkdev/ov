@@ -59,7 +59,7 @@ func (f *frontier) reportProbe() {
 		return
 	}
 	f.progMu.Lock()
-	prerr("\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
+	prerr(tr("\r探测中 ... %d 次请求, 命中 %d 个    ", "\rprobing ... %d requests, %d hits    "), f.probed.Load(), f.hitsFound.Load())
 	f.progMu.Unlock()
 }
 

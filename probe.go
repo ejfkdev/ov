@@ -225,7 +225,7 @@ func looksLikeTextPage(body []byte, ct string) bool {
 // classify 根据开头字节判断文件类型描述, 用于展示。
 func classify(body []byte) string {
 	if len(body) < 4 {
-		return "未知(过短)"
+		return tr("未知(过短)", "unknown (too short)")
 	}
 	has := func(p string) bool { return bytes.HasPrefix(body, []byte(p)) }
 	switch {
@@ -236,7 +236,7 @@ func classify(body []byte) string {
 	case has("MZ"):
 		return "exe/dll(PE)"
 	case has("\xca\xfe\xba\xbe"):
-		return "mach-o 通用"
+		return tr("mach-o 通用", "mach-o universal")
 	case has(string([]byte{0xcf, 0xfa, 0xed, 0xfe})):
 		return "mach-o arm64"
 	case has(string([]byte{0xfe, 0xed, 0xfa, 0xcf})):
@@ -248,7 +248,7 @@ func classify(body []byte) string {
 	case has("%PDF"):
 		return "pdf"
 	case has(string([]byte{0xd8, 0x41, 0xa9, 0x66})):
-		return "dmg(加密)"
+		return tr("dmg(加密)", "dmg (encrypted)")
 	case has("xar!"):
 		return "dmg(xar)"
 	case has("\x1f\x8b"):
@@ -262,7 +262,7 @@ func classify(body []byte) string {
 	case has("!<arch>"):
 		return "deb/ar"
 	default:
-		return "二进制"
+		return tr("二进制", "binary")
 	}
 }
 
@@ -287,17 +287,17 @@ func probeURLHeadOnly(hc *http.Client, u, ua string) probeResult {
 		status == http.StatusForbidden || status == http.StatusTooManyRequests ||
 		status >= 500 || status == 0 {
 		// HEAD 不可用/状态可疑: 标记为需 GET 判定的疑似命中。
-		return probeResult{found: true, size: -1, kind: "待校验", status: status}
+		return probeResult{found: true, size: -1, kind: tr("待校验", "pending"), status: status}
 	}
 	if status >= 200 && status < 300 {
 		// HEAD 响应头已表明是下载文件(attachment 处置 / 二进制+体积达标): 直接确认, 省去慢速 GET。
 		if headTrustOK(sizeHint, ct, disp) {
-			return probeResult{found: true, verified: true, size: sizeHint, kind: "HEAD 确认", status: status}
+			return probeResult{found: true, verified: true, size: sizeHint, kind: tr("HEAD 确认", "HEAD confirmed"), status: status}
 		}
-		return probeResult{found: true, size: sizeHint, kind: "待校验", status: status}
+		return probeResult{found: true, size: sizeHint, kind: tr("待校验", "pending"), status: status}
 	}
 	if status == http.StatusRequestedRangeNotSatisfiable {
-		return probeResult{found: true, verified: true, size: 0, kind: "416 空文件", status: status}
+		return probeResult{found: true, verified: true, size: 0, kind: tr("416 空文件", "416 empty file"), status: status}
 	}
 	return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
 }
@@ -341,17 +341,17 @@ func probeURL(hc *http.Client, u, ua string) probeResult {
 	case status >= 200 && status < 300:
 		// HEAD 响应头已表明是下载文件: 直接确认, 省去慢速 GET。
 		if headTrustOK(sizeHint, ct, disp) {
-			return probeResult{found: true, verified: true, size: sizeHint, kind: "HEAD 确认", status: status}
+			return probeResult{found: true, verified: true, size: sizeHint, kind: tr("HEAD 确认", "HEAD confirmed"), status: status}
 		}
 		// 其余: 存在或假 200, 用 GET 读开头字节验证。
 		return verifyGet(hc, u, ua, sizeHint)
 	case status == http.StatusRequestedRangeNotSatisfiable:
 		// 416: 资源存在(空文件)。
-		return probeResult{found: true, verified: true, size: 0, kind: "416 空文件", status: status}
+		return probeResult{found: true, verified: true, size: 0, kind: tr("416 空文件", "416 empty file"), status: status}
 	case status >= 400:
 		return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
 	default:
-		return notFoundResult("状态"+fmt.Sprint(status), -1, status)
+		return notFoundResult(tr("状态", "status")+fmt.Sprint(status), -1, status)
 	}
 }
 
@@ -360,32 +360,32 @@ func probeURL(hc *http.Client, u, ua string) probeResult {
 func verifyGet(hc *http.Client, u, ua string, sizeHint int64) probeResult {
 	status, body, size, ct, err := getFirstBytes(hc, u, ua, magicProbeSize)
 	if err != nil {
-		return notFoundResult("网络错误", -1, status)
+		return notFoundResult(tr("网络错误", "network error"), -1, status)
 	}
 	switch {
 	case status == http.StatusRequestedRangeNotSatisfiable:
 		// 416: 存在但 Range 不支持(如空文件)。
 		if size >= 0 || status == 416 {
-			return foundResult("空文件(416)", 0, status)
+			return foundResult(tr("空文件(416)", "empty file (416)"), 0, status)
 		}
 		return notFoundResult("416", -1, status)
 	case status >= 200 && status < 300:
 		if len(body) == 0 {
 			if size > 0 {
-				return foundResult("有大小无内容", size, status)
+				return foundResult(tr("有大小无内容", "has size but no content"), size, status)
 			}
 			if sizeHint > 0 {
 				// GET 没读到头但 HEAD 有大小, 视为存在。
-				return foundResult("HEAD 有大小", sizeHint, status)
+				return foundResult(tr("HEAD 有大小", "HEAD has size"), sizeHint, status)
 			}
-			return notFoundResult("空响应", -1, status)
+			return notFoundResult(tr("空响应", "empty response"), -1, status)
 		}
 		if looksLikeTextPage(body, ct) {
-			return notFoundResult("文本错误页", size, status)
+			return notFoundResult(tr("文本错误页", "text error page"), size, status)
 		}
 		kind := classify(body)
 		if strictMagic && kind == "二进制" {
-			return notFoundResult("未知二进制(严格模式)", size, status)
+			return notFoundResult(tr("未知二进制(严格模式)", "unknown binary (strict mode)"), size, status)
 		}
 		return foundResult(kind, size, status)
 	default:

@@ -149,9 +149,7 @@ func (h *headerFlag) Set(v string) error {
 	return nil
 }
 
-func usage() {
-	w := flag.CommandLine.Output()
-	fmt.Fprintf(w, `ov v%s — 从一条下载链接枚举出所有可下载版本
+const usageZh = `ov v%s — 从一条下载链接枚举出所有可下载版本
 仓库: %s
 
 用法:
@@ -198,7 +196,61 @@ func usage() {
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
   -version, -V      显示版本号与仓库地址
-`, version, repoURL)
+`
+
+const usageEn = `ov v%s — enumerate all downloadable versions from one link
+Repository: %s
+
+Usage:
+  ov [options] <download-url>
+
+Feed it one download link containing a version, and it auto-detects the
+version, then enumerates every downloadable version of the same family
+(fast HEAD checks + magic-byte verification, fake-200 pages excluded).
+Dynamic expansion by default: historical enumeration + wide-net majors +
+frontier growth. No range setup needed.
+
+When piped / non-interactive (e.g. ov URL | cat), it outputs found URLs
+only — one per line, streamed in real time, no progress noise.
+
+Common examples:
+  # Basic: auto-detect 3.10.2 and enumerate all versions
+  ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
+
+  # Show sizes & types, newest first
+  ov -sizes -reverse "https://download.manus.im/Manus-Setup-1.7.2.dmg"
+
+  # Discover other platform builds from one link
+  ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
+
+  # Recover older versions when the release layout changed
+  ov -path-variants "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
+
+  # Proxy / custom headers / slow CDN
+  ov -x http://127.0.0.1:7890 "https://host/app-1.7.2.dmg"
+  ov -H "Authorization: Bearer xxx" "https://host/app-1.7.2.dmg"
+  ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
+
+  # Pipe/script consumption: pure URL stream
+  ov "https://host/app-1.7.2.dmg" | while read -r u; do curl -LO "$u"; done
+
+Options:
+  -c N              concurrent probes (default 50)
+  -timeout D        per-request timeout (default 10s)
+  -k                skip TLS certificate verification
+  -x PROXY          proxy (curl style): http://host:port or socks5://host:port
+  -H "Name: Value"  custom request header (curl style, repeatable)
+  -sizes            print file size (bytes) and type
+  -reverse          output newest first
+  -platform         discover other platform/arch variants from the URL
+  -path-variants    on 404, fall back to generic path variants (drop a subdir / swap arch)
+  -tls-fingerprint F TLS fingerprint spoofing: chrome, firefox, ios, android, ...
+  -force-tpl        force {v} template probing (bypass non-traversable check)
+  -version, -V      show version and repository
+`
+
+func usage() {
+	fmt.Fprintf(flag.CommandLine.Output(), tr(usageZh, usageEn), version, repoURL)
 }
 
 // prerr 仅交互式模式下打印辅助信息到 stderr(进度/说明); 非交互时静默。
@@ -210,7 +262,7 @@ func prerr(format string, a ...any) {
 }
 
 func fatal(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "错误: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, tr("错误: ", "error: ")+format+"\n", a...)
 	os.Exit(2)
 }
 
@@ -343,6 +395,26 @@ func newUTLSRoundTripper(name string, skipTLS bool, proxyDial proxy.Dialer) http
 	}
 }
 
+// lang 界面语言: 系统 locale 为中文(含 zh_CN/zh_TW/zh_HK)时用中文, 其余用英文。
+var lang = detectLang()
+
+func detectLang() string {
+	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if strings.HasPrefix(strings.ToLower(os.Getenv(k)), "zh") {
+			return "zh"
+		}
+	}
+	return "en"
+}
+
+// tr 按当前语言取中文或英文文案。
+func tr(zh, en string) string {
+	if lang == "zh" {
+		return zh
+	}
+	return en
+}
+
 func main() {
 	o := parseFlags()
 	interactive = isTerminal(os.Stdout) && isTerminal(os.Stderr)
@@ -352,7 +424,7 @@ func main() {
 	}
 	raw := strings.TrimSpace(flag.Arg(0))
 	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
-		fatal("地址必须以 http:// 或 https:// 开头: %s", raw)
+		fatal(tr("地址必须以 http:// 或 https:// 开头: %s", "URL must start with http:// or https://: %s"), raw)
 	}
 
 	p := &Prober{modes: newVersionModes(modeSet(o.mode))}
@@ -363,13 +435,13 @@ func main() {
 	if o.proxy != "" {
 		u, err := url.Parse(o.proxy)
 		if err != nil || u.Host == "" {
-			fatal("代理地址格式错误: %s (示例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080)", o.proxy)
+			fatal(tr("代理地址格式错误: %s (示例: http://127.0.0.1:7890 或 socks5://127.0.0.1:1080)", "invalid proxy URL: %s (e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080)"), o.proxy)
 		}
 		globalProxyURL = u
 		proxyFunc = http.ProxyURL(u)
 		d, err := newProxyDialer(o.proxy)
 		if err != nil {
-			fatal("不支持的代理地址: %s (支持 http、https、socks5)", o.proxy)
+			fatal(tr("不支持的代理地址: %s (支持 http、https、socks5)", "unsupported proxy: %s (supported: http, https, socks5)"), o.proxy)
 		}
 		proxyDial = d
 	}
@@ -377,7 +449,7 @@ func main() {
 		k, v, ok := strings.Cut(hs, ":")
 		k = strings.TrimSpace(k)
 		if !ok || k == "" {
-			fatal("请求头格式错误(应为 \"Name: Value\"): %s", hs)
+			fatal(tr("请求头格式错误(应为 \"Name: Value\"): %s", "invalid header (expected \"Name: Value\"): %s"), hs)
 		}
 		if globalHeaders == nil {
 			globalHeaders = http.Header{}
@@ -439,17 +511,17 @@ func runPlatform(o *options, hc *http.Client) {
 	// 先验证原 URL 是否有效。
 	r := probeURLWithRetry(hc, o, raw)
 	if !r.found {
-		prerr("原 URL 当前不可下载: %s (状态 %d), 仍尝试平台变体\n", r.kind, r.status)
+		prerr(tr("原 URL 当前不可下载: %s (状态 %d), 仍尝试平台变体\n", "original URL not downloadable now: %s (status %d); trying platform variants anyway\n"), r.kind, r.status)
 	}
 
 	variants := platformVariants(raw)
-	prerr("生成 %d 个平台变体, 探测中...\n", len(variants))
+	prerr(tr("生成 %d 个平台变体, 探测中...\n", "generating %d platform variants...\n"), len(variants))
 	for _, v := range variants {
 		vr := probeURLWithRetry(hc, o, v)
 		if vr.found {
 			emitURL(v) // 非交互: 直接流式输出 URL(交互模式则由下方打印带前缀的行)
 			if interactive {
-				fmt.Printf("[平台] %s", v)
+				fmt.Printf("%s%s", tr("[平台] ", "[platform] "), v)
 				printSizes(o, vr)
 				fmt.Println()
 			}
@@ -467,18 +539,18 @@ func verbosef(o *options, format string, a ...any) {
 func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	// 不可遍历检查。
 	if ok, reason := isTraversable(raw); !ok && !o.forceTpl {
-		fatal("该地址不可遍历: %s\n  %s\n  若确认可枚举, 可用 -force-tpl 强制切换为模板模式(需地址含 {v})", raw, reason)
+		fatal(tr("该地址不可遍历: %s\n  %s\n  若确认可枚举, 可用 -force-tpl 强制切换为模板模式(需地址含 {v})", "URL not traversable: %s\n  %s\n  if you are sure it is enumerable, use -force-tpl (URL must contain {v})"), raw, reason)
 	}
 
 	// 识别版本。
 	versions := p.detectVersions(raw)
 	if len(versions) == 0 && !o.forceTpl {
-		fatal("没有识别到可枚举的版本号。可用 -force-tpl 使用 {v} 模板")
+		fatal(tr("没有识别到可枚举的版本号。可用 -force-tpl 使用 {v} 模板", "no enumerable version found; use -force-tpl with a {v} template"))
 	}
 
 	tpl := buildTemplate(raw, versions)
 	if !strings.Contains(tpl, "{v}") {
-		fatal("模板中没有 {v} 占位符: %s", tpl)
+		fatal(tr("模板中没有 {v} 占位符: %s", "template has no {v} placeholder: %s"), tpl)
 	}
 
 	// 确定探测范围: 以地址中识别的版本为上限再放宽几个补丁(保持位数格式, 如 2025.08.22)。
@@ -496,7 +568,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		}
 	}
 	if toText == "" {
-		fatal("地址中未找到版本号, 无法自动确定探测范围")
+		fatal(tr("地址中未找到版本号, 无法自动确定探测范围", "no version found in URL; cannot determine probe range"))
 	}
 
 	from, _, err := parseIntsW(o.from)
@@ -515,7 +587,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	from = padComps(trimComps(from, n), n)
 	to = padComps(to, n)
 	if !leComps(from, to) {
-		fatal("探测范围不合法: %s 大于 %s", joinComps(from), joinComps(to))
+		fatal(tr("探测范围不合法: %s 大于 %s", "invalid range: %s > %s"), joinComps(from), joinComps(to))
 	}
 
 	// smart 策略的锚点: 识别到的最后一个版本(前沿探索以此为下界)。
@@ -543,12 +615,12 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		fatal("%v", candErr)
 	}
 
-	prerr("模板: %s\n", tpl)
+	prerr(tr("模板: %s\n", "template: %s\n"), tpl)
 	if len(versions) > 0 {
-		prerr("识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
+		prerr(tr("识别到 %d 个版本串: %s\n", "detected %d version(s): %s\n"), len(versions), strings.Join(versions, ", "))
 	}
 	// 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
-	prerr("探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
+	prerr(tr("探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", "probing: concurrency %d, dynamic range (history + wide-net + frontier)\n"), o.conc)
 
 	// 并发探测(两段式: 发现 + 校验):
 	//  - 发现 worker 只做 HEAD 快探, 命中疑似即立刻把校验任务丢进独立的校验队列,
@@ -564,7 +636,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	var progMu sync.Mutex
 	report := func() {
 		progMu.Lock()
-		prerr("\r探测中 ... %d 次请求, 命中 %d 个    ", probed.Load(), hitsFound.Load())
+		prerr(tr("\r探测中 ... %d 次请求, 命中 %d 个    ", "\rprobing ... %d requests, %d hits    "), probed.Load(), hitsFound.Load())
 		progMu.Unlock()
 	}
 
@@ -585,7 +657,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 				filtered = append(filtered, v)
 			}
 		}
-		prerr("主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
+		prerr(tr("主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
+			"major prescan: %d live majors, history candidates %d -> %d\n"),
 			len(liveMajors), len(candidates), len(filtered))
 		candidates = filtered
 	}
@@ -705,7 +778,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 	}
-	prerr("完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
+	prerr(tr("完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n", "done: %d history + %d frontier = %d requests, %d downloadable URLs, took %s\n"),
 		len(candidates), frontierProbed, len(candidates)+int(frontierProbed), count, time.Since(start).Round(time.Millisecond))
 
 	// 高级模式: 从命中的 URL 里再找其他平台。
@@ -723,7 +796,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 		if len(extra) > 0 {
-			prerr("平台变体探测: %d 个候选\n", len(extra))
+			prerr(tr("平台变体探测: %d 个候选\n", "platform variants: %d candidates\n"), len(extra))
 			keys := make([]string, 0, len(extra))
 			for k := range extra {
 				keys = append(keys, k)
@@ -747,9 +820,9 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 
 func sizeText(size int64) string {
 	if size < 0 {
-		return "大小未知"
+		return tr("大小未知", "unknown size")
 	}
-	return fmt.Sprintf("%d 字节", size)
+	return fmt.Sprintf(tr("%d 字节", "%d bytes"), size)
 }
 
 func printSizes(o *options, r probeResult) {
@@ -797,7 +870,7 @@ func probeHeadRetry(hc *http.Client, o *options, u string) probeResult {
 	var last probeResult
 	for attempt := 0; ; attempt++ {
 		last = probeURLHeadOnly(hc, u, o.ua)
-		sus := last.status >= 500 || last.status == 429 || (last.status == 0 && last.kind == "网络错误")
+		sus := last.status >= 500 || last.status == 429 || (last.status == 0)
 		if !sus || attempt >= o.retry {
 			return last
 		}
@@ -901,7 +974,7 @@ func probeURLWithRetry(hc *http.Client, o *options, u string) probeResult {
 	var last probeResult
 	for attempt := 0; ; attempt++ {
 		last = probeURL(hc, u, o.ua)
-		sus := last.status >= 500 || last.status == 429 || (last.status == 0 && last.kind == "网络错误")
+		sus := last.status >= 500 || last.status == 429 || (last.status == 0)
 		if !sus || attempt >= o.retry {
 			return last
 		}
@@ -927,8 +1000,8 @@ func probeURLWithQueryFallback(hc *http.Client, o *options, u string) probeResul
 // runRolling 滚动窗口模式: 当候选空间过大时, 以锚点为中心,
 // 向下扫描(主分量递减) + 向上前沿生长, 均使用滚动窗口命中刷新策略。
 func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []int) {
-	prerr("候选空间过大, 切换为滚动窗口模式 (连续 %d 次未命中停止)\n", o.stop)
-	prerr("锚点: %s\n", joinCompsW(anchor, widths))
+	prerr(tr("候选空间过大, 切换为滚动窗口模式 (连续 %d 次未命中停止)\n", "candidate space too large; switching to rolling window (stop after %d consecutive misses)\n"), o.stop)
+	prerr(tr("锚点: %s\n", "anchor: %s\n"), joinCompsW(anchor, widths))
 
 	found := make(map[string]probeResult)
 	var mu sync.Mutex
@@ -1005,6 +1078,6 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 			}
 		}
 	}
-	prerr("完成: 滚动窗口探测 %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
+	prerr(tr("完成: 滚动窗口探测 %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n", "done: rolling window probed %d requests, %d downloadable URLs, took %s\n"),
 		probed.Load(), count, time.Since(start).Round(time.Millisecond))
 }
