@@ -38,7 +38,9 @@ func notFoundResult(kind string, size int64, status int) probeResult {
 }
 
 func foundResult(kind string, size int64, status int) probeResult {
-	return probeResult{found: true, size: size, kind: kind, status: status}
+	// findResult 的产物都是经实际检查(HEAD 置信或 GET 魔数校验)确认的真实下载,
+	// 因此统一标记 verified, 供实时输出层直接采信。
+	return probeResult{found: true, verified: true, size: size, kind: kind, status: status}
 }
 
 // applyExtraHeaders 把 -H 设置的自定义请求头合并进请求(覆盖默认 UA 等)。

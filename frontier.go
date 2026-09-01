@@ -191,8 +191,10 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 			f.hits[v] = r
 		}
 		f.mu.Unlock()
-		if !exists {
-			emitURL(r.url) // 非交互: 前沿命中实时输出(结果已含 GET 校验)
+		if !exists && r.verified {
+			// 仅在经 HEAD 头确认或 GET 魔数校验的真实命中才实时输出,
+			// 与历史区"确认一个输出一个"的语义一致。
+			emitURL(r.url)
 		}
 		return true, !exists
 	}
