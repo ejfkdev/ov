@@ -8,3 +8,4 @@ ov
 *.tar.gz
 *.tmp
 testdata/
+.DS_Store
