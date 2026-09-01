@@ -148,6 +148,9 @@ func usage() {
 同系列的所有可下载版本(HEAD 快探 + 魔数校验, 自动排除假 200)。
 默认动态扩展: 历史区枚举 + 广撒网主版本 + 前沿生长, 无需指定范围。
 
+管道/非交互运行时(如 ov URL | cat), 只实时输出发现的 URL:
+一行一个、发现即打印, 无任何进度信息。
+
 常用示例:
   # 最基本: 自动识别 3.10.2 并枚举全部版本
   ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
@@ -165,6 +168,9 @@ func usage() {
   ov -x http://127.0.0.1:7890 "https://host/app-1.7.2.dmg"
   ov -H "Authorization: Bearer xxx" "https://host/app-1.7.2.dmg"
   ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
+
+  # 管道/脚本消费: 纯 URL 实时流
+  ov "https://host/app-1.7.2.dmg" | while read -r u; do curl -LO "$u"; done
 
 选项:
   -c N              并发探测数 (默认 50)
