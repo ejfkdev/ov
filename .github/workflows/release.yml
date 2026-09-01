@@ -57,7 +57,7 @@ jobs:
         run: |
           ext='${{ matrix.ext }}'
           name="ov-${GOOS}-${GOARCH}${ext}"
-          go build -ldflags="-s -w" -o "$name" .
+          go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o "$name" .
           upx -9 "$name"
           echo "$name" >> artifacts.txt
 

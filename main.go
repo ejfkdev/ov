@@ -27,6 +27,12 @@ import (
 
 const defaultUserAgent = "Mozilla/5.0 (compatible; ov-prober/1.0)"
 
+// version 构建时注入的版本号(-ldflags "-X main.version=v1.2.3"), 本地构建默认 dev。
+var version = "dev"
+
+// repoURL 项目仓库地址。
+const repoURL = "https://github.com/ejfkdev/ov"
+
 // 由 -x / -H 设置的全局联网配置, 所有请求构造处统一应用。
 var (
 	globalProxyURL *url.URL
@@ -101,6 +107,8 @@ type options struct {
 func parseFlags() *options {
 	flag.Usage = usage
 	o := &options{}
+	showVersion := flag.Bool("version", false, "显示版本号")
+	flag.BoolVar(showVersion, "V", false, "显示版本号")
 	// 版本范围/识别/策略/校验等相关参数已内置为最优配置, 不再暴露为命令行选项。
 	o.from = "0.0.0"
 	o.mode = "auto"
@@ -125,6 +133,10 @@ func parseFlags() *options {
 	flag.StringVar(&o.tlsFingerprint, "tls-fingerprint", "", "TLS 指纹伪装: chrome、firefox、ios、android 等")
 	flag.BoolVar(&o.forceTpl, "force-tpl", false, "强制使用 {v} 模板探测(绕过不可遍历检查)")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("ov v%s\n%s\n", version, repoURL)
+		os.Exit(0)
+	}
 	return o
 }
 
@@ -139,7 +151,8 @@ func (h *headerFlag) Set(v string) error {
 
 func usage() {
 	w := flag.CommandLine.Output()
-	fmt.Fprint(w, `ov — 从一条下载链接枚举出所有可下载版本
+	fmt.Fprintf(w, `ov v%s — 从一条下载链接枚举出所有可下载版本
+仓库: %s
 
 用法:
   ov [选项] <下载地址>
@@ -184,7 +197,8 @@ func usage() {
   -path-variants    主路径 404 时回退通用路径变体(去子目录/换架构名)
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
-`)
+  -version, -V      显示版本号与仓库地址
+`, version, repoURL)
 }
 
 // prerr 仅交互式模式下打印辅助信息到 stderr(进度/说明); 非交互时静默。
