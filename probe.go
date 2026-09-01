@@ -8,8 +8,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -57,6 +59,7 @@ func applyExtraHeaders(req *http.Request) {
 }
 
 // headProbe 发 HEAD 请求, 返回状态码、Content-Length、Content-Type 与 Content-Disposition。
+// 301/302 由客户端跟随(上限 5 次, 见 main.go 客户端构造), 循环跳转/超限视为不存在。
 func headProbe(hc *http.Client, u, ua string) (int, int64, string, string, error) {
 	req, err := http.NewRequest(http.MethodHead, u, nil)
 	if err != nil {
@@ -66,6 +69,14 @@ func headProbe(hc *http.Client, u, ua string) (int, int64, string, string, error
 	applyExtraHeaders(req)
 	resp, err := hc.Do(req)
 	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) && ue.Err == http.ErrUseLastResponse {
+			// 重定向超限/循环: 视为不存在, 不重试。
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return 310, -1, "", "", nil
+		}
 		return 0, -1, "", "", err
 	}
 	resp.Body.Close()
@@ -128,6 +139,14 @@ func getFirstBytes(hc *http.Client, u, ua string, n int) (int, []byte, int64, st
 	applyExtraHeaders(req)
 	resp, err := hc.Do(req)
 	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) && ue.Err == http.ErrUseLastResponse {
+			// 重定向超限/循环: 视为不存在。
+			if resp != nil {
+				resp.Body.Close()
+			}
+			return 310, nil, -1, "", nil
+		}
 		return 0, nil, -1, "", err
 	}
 	defer resp.Body.Close()
@@ -284,21 +303,21 @@ func probeURLHeadOnly(hc *http.Client, u, ua string) probeResult {
 	}
 	if err != nil ||
 		status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
-		status == http.StatusForbidden || status == http.StatusTooManyRequests ||
+		status == http.StatusTooManyRequests ||
 		status >= 500 || status == 0 {
-		// HEAD 不可用/状态可疑: 标记为需 GET 判定的疑似命中。
+		// HEAD 不可用/瞬时错误: 标记为需 GET 判定的疑似命中。
+		// 注意: 403 不算命中(按需求: S3 式 403 即不存在), 走下方 notFound。
 		return probeResult{found: true, size: -1, kind: tr("待校验", "pending"), status: status}
 	}
-	if status >= 200 && status < 300 {
-		// HEAD 响应头已表明是下载文件(attachment 处置 / 二进制+体积达标): 直接确认, 省去慢速 GET。
+	if status == http.StatusOK {
+		// 命中只认 200: HEAD 响应头已表明是下载文件(attachment 处置 / 二进制+体积达标)
+		// 则直接确认, 省去慢速 GET。
 		if headTrustOK(sizeHint, ct, disp) {
 			return probeResult{found: true, verified: true, size: sizeHint, kind: tr("HEAD 确认", "HEAD confirmed"), status: status}
 		}
 		return probeResult{found: true, size: sizeHint, kind: tr("待校验", "pending"), status: status}
 	}
-	if status == http.StatusRequestedRangeNotSatisfiable {
-		return probeResult{found: true, verified: true, size: 0, kind: tr("416 空文件", "416 empty file"), status: status}
-	}
+	// 其余 2xx/3xx/4xx/416 一律不算命中。
 	return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
 }
 
@@ -328,31 +347,25 @@ func probeURL(hc *http.Client, u, ua string) probeResult {
 		return notFoundResult("404", -1, status)
 	}
 
-	// HEAD 不可用或状态可疑, 直接 GET 判真。
+	// HEAD 不可用或瞬时错误, 直接 GET 判真。403 不算命中(按需求), 走 notFound。
 	if err != nil ||
 		status == http.StatusMethodNotAllowed || status == http.StatusNotImplemented ||
-		status == http.StatusForbidden || status == http.StatusTooManyRequests ||
+		status == http.StatusTooManyRequests ||
 		status >= 500 ||
 		status == 0 {
 		return verifyGet(hc, u, ua, -1)
 	}
 
-	switch {
-	case status >= 200 && status < 300:
-		// HEAD 响应头已表明是下载文件: 直接确认, 省去慢速 GET。
+	if status == http.StatusOK {
+		// 命中只认 200: HEAD 响应头已表明是下载文件: 直接确认, 省去慢速 GET。
 		if headTrustOK(sizeHint, ct, disp) {
 			return probeResult{found: true, verified: true, size: sizeHint, kind: tr("HEAD 确认", "HEAD confirmed"), status: status}
 		}
 		// 其余: 存在或假 200, 用 GET 读开头字节验证。
 		return verifyGet(hc, u, ua, sizeHint)
-	case status == http.StatusRequestedRangeNotSatisfiable:
-		// 416: 资源存在(空文件)。
-		return probeResult{found: true, verified: true, size: 0, kind: tr("416 空文件", "416 empty file"), status: status}
-	case status >= 400:
-		return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
-	default:
-		return notFoundResult(tr("状态", "status")+fmt.Sprint(status), -1, status)
 	}
+	// 其余 2xx/3xx/4xx/416 一律不算命中。
+	return notFoundResult("HTTP "+fmt.Sprint(status), -1, status)
 }
 
 // verifyGet 发 GET 读开头字节, 判定是否真实安装包。
@@ -363,13 +376,8 @@ func verifyGet(hc *http.Client, u, ua string, sizeHint int64) probeResult {
 		return notFoundResult(tr("网络错误", "network error"), -1, status)
 	}
 	switch {
-	case status == http.StatusRequestedRangeNotSatisfiable:
-		// 416: 存在但 Range 不支持(如空文件)。
-		if size >= 0 || status == 416 {
-			return foundResult(tr("空文件(416)", "empty file (416)"), 0, status)
-		}
-		return notFoundResult("416", -1, status)
-	case status >= 200 && status < 300:
+	case status == http.StatusOK || status == http.StatusPartialContent:
+		// 命中只认 200; GET+Range 校验路径额外接受 206(Range 请求的正常响应)。
 		if len(body) == 0 {
 			if size > 0 {
 				return foundResult(tr("有大小无内容", "has size but no content"), size, status)
@@ -389,6 +397,7 @@ func verifyGet(hc *http.Client, u, ua string, sizeHint int64) probeResult {
 		}
 		return foundResult(kind, size, status)
 	default:
+		// 416/4xx/3xx(未跟随到底)/5xx 一律不算命中。
 		return notFoundResult("HTTP "+fmt.Sprint(status), size, status)
 	}
 }

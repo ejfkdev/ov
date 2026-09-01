@@ -44,6 +44,10 @@ var (
 // 确认一个立即打印一个); 进度/模板/完成等辅助信息只在交互式下打往 stderr。
 var interactive bool
 
+// debugFake200: OV_DEBUG_FAKE=1 时打印被校验判为"假 200"而回退的疑似命中,
+// 便于观察 CDN 假 200 的分布; 默认关闭。
+var debugFake200 = os.Getenv("OV_DEBUG_FAKE") != ""
+
 func isTerminal(f *os.File) bool {
 	st, err := f.Stat()
 	if err != nil {
@@ -477,6 +481,14 @@ func main() {
 	hc := &http.Client{
 		Timeout:   o.timeout,
 		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// HEAD/GET 探测跟随 301/302(及 303/307/308), 最多 5 次;
+			// 超限/循环返回 ErrUseLastResponse, 调用方按不存在处理。
+			if len(via) >= 5 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
 	}
 
 	if o.platform {
@@ -682,6 +694,10 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 					delete(found, job.v)
 					hitsFound.Add(-1)
 					mu.Unlock()
+					if debugFake200 {
+						// 调试输出绕过 interactive 门控(prerr 仅在终端打印), 管道下也可见。
+						fmt.Fprintf(os.Stderr, tr("\n[假200] %s -> %s (HTTP %d)\n", "\n[fake200] %s -> %s (HTTP %d)\n"), job.url, r.kind, r.status)
+					}
 				} else {
 					mu.Unlock()
 				}

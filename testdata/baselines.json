@@ -1,0 +1,683 @@
+[
+ {
+  "name": "cursor grokbot darwin-arm64 dmg",
+  "template": "https://downloads.cursor.com/grokbot/stable/darwin-arm64/{v}/Grok_Bot_{v}.dmg",
+  "anchor": "0.30.0",
+  "expected_hits": [],
+  "recorded_at": "2026-09-01",
+  "notes": "S3/CloudFront: 不存在版本 HEAD 返回 403（非 404）。0.24.0 的发现偶有不稳（瞬时非 200 响应），基线校验对其容忍单跑缺失、三跑取并集。",
+  "kind": "range",
+  "anchor_version": ""
+ },
+ {
+  "name": "autoglm.aminer.cn",
+  "template": "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-{v}-cn.dmg",
+  "anchor": "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-3.0.0-cn.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "1.0.0",
+   "1.1.0",
+   "1.1.1",
+   "1.2.0",
+   "1.3.0",
+   "1.4.1",
+   "1.5.1",
+   "1.9.0",
+   "1.10.0",
+   "1.10.1",
+   "1.11.0",
+   "1.11.2",
+   "1.11.3",
+   "1.11.4",
+   "1.13.0",
+   "1.14.0",
+   "1.14.2",
+   "1.15.0",
+   "1.15.2",
+   "1.16.0",
+   "1.17.1",
+   "1.17.2",
+   "1.17.4",
+   "1.17.7",
+   "1.17.8",
+   "1.17.9",
+   "3.0.0"
+  ],
+  "seen_urls": [
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-0.3.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.0.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.1.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.1.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.10.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.10.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.11.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.11.2-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.11.3-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.11.4-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.12.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.13.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.14.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.14.2-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.15.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.15.2-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.16.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.2-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.4-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.7-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.8-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.17.9-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.2.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.3.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.4.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.5.1-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-1.9.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-3.0.0-cn.dmg",
+   "https://autoglm.aminer.cn/autoclaw/updates/autoclaw-{v}-cn.dmg"
+  ],
+  "anchor_version": "3.0.0"
+ },
+ {
+  "name": "autoglm.aminer.cn",
+  "template": "https://autoglm.aminer.cn/autotyper/updates/AutoGLM_win32_x64_1.11.5_260609_2109.exe",
+  "anchor": "https://autoglm.aminer.cn/autotyper/updates/AutoGLM_win32_x64_1.11.5_260609_2109.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://autoglm.aminer.cn/autotyper/updates/AutoGLM_win32_x64_1.11.5_260609_2109.exe"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "autoglm.aminer.cn",
+  "template": "https://autoglm.aminer.cn/desktop_client/AutoTyper_072203.dmg",
+  "anchor": "https://autoglm.aminer.cn/desktop_client/AutoTyper_072203.dmg",
+  "kind": "single",
+  "expected_hits": [
+   "https://autoglm.aminer.cn/desktop_client/AutoTyper_072203.dmg"
+  ],
+  "seen_urls": [
+   "https://autoglm.aminer.cn/desktop_client/AutoTyper_072203.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "capy-public-prod.tos-cn-shanghai.volces.com",
+  "template": "https://capy-public-prod.tos-cn-shanghai.volces.com/desktopversion/stepfun-desktop-1.0.2_1585-production-20260819-202234-arm64.dmg",
+  "anchor": "https://capy-public-prod.tos-cn-shanghai.volces.com/desktopversion/stepfun-desktop-1.0.2_1585-production-20260819-202234-arm64.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://capy-public-prod.tos-cn-shanghai.volces.com/desktopversion/stepfun-desktop-1.0.2_1585-production-20260819-202234-arm64.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "cdn-hybrid-prod.hunyuan.tencent.com",
+  "template": "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/5ac8bd19b3e47e0d88fbbb01899a6c2f/yuanbao_2.81.1.632_universal.dmg",
+  "anchor": "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/5ac8bd19b3e47e0d88fbbb01899a6c2f/yuanbao_2.81.1.632_universal.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/5ac8bd19b3e47e0d88fbbb01899a6c2f/yuanbao_2.81.1.632_universal.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "cdn-hybrid-prod.hunyuan.tencent.com",
+  "template": "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/b2640c59915a11b284a81d8d469c715d/yuanbao_2.81.0.629_x64.exe",
+  "anchor": "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/b2640c59915a11b284a81d8d469c715d/yuanbao_2.81.0.629_x64.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://cdn-hybrid-prod.hunyuan.tencent.com/Desktop/official/b2640c59915a11b284a81d8d469c715d/yuanbao_2.81.0.629_x64.exe"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "cdn-zcode.z.ai",
+  "template": "https://cdn-zcode.z.ai/zcode/electron/releases/{v}/ZCode-{v}-mac-arm64.dmg",
+  "anchor": "https://cdn-zcode.z.ai/zcode/electron/releases/3.2.5/ZCode-3.2.5-mac-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "0.2.0",
+   "0.2.6",
+   "0.2.7",
+   "1.0.0",
+   "1.1.0",
+   "1.1.1",
+   "1.2.0",
+   "1.2.1",
+   "1.3.0",
+   "1.4.0",
+   "1.5.0",
+   "1.6.0",
+   "1.6.1",
+   "1.7.0",
+   "1.8.0",
+   "1.9.0",
+   "1.10.0",
+   "1.11.0",
+   "2.0.0",
+   "2.1.0",
+   "2.1.1",
+   "2.2.0",
+   "2.3.0",
+   "2.3.1",
+   "2.4.0",
+   "2.4.1",
+   "2.5.0",
+   "2.6.0",
+   "2.7.0",
+   "2.8.0",
+   "2.9.0",
+   "2.10.0",
+   "2.11.0",
+   "2.12.0",
+   "2.13.0",
+   "3.0.0",
+   "3.0.1",
+   "3.1.0",
+   "3.1.1",
+   "3.1.2",
+   "3.1.3",
+   "3.1.4",
+   "3.1.5",
+   "3.1.6",
+   "3.1.7",
+   "3.1.8",
+   "3.2.0",
+   "3.2.1",
+   "3.2.2",
+   "3.2.3",
+   "3.2.4",
+   "3.2.5",
+   "3.3.0",
+   "3.3.1",
+   "3.3.2",
+   "3.3.3",
+   "3.3.4",
+   "3.3.5"
+  ],
+  "seen_urls": [
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.2.5/ZCode-3.2.5-mac-arm64.dmg"
+  ],
+  "anchor_version": "3.2.5"
+ },
+ {
+  "name": "cdn-zcode.z.ai",
+  "template": "https://cdn-zcode.z.ai/zcode/electron/releases/{v}/macos-arm64/ZCode-{v}-mac-arm64.dmg",
+  "anchor": "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/macos-arm64/ZCode-3.8.1-mac-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.3.3",
+   "3.4.0",
+   "3.4.1",
+   "3.4.2",
+   "3.5.2",
+   "3.5.3",
+   "3.6.1",
+   "3.6.2",
+   "3.6.4",
+   "3.7.1",
+   "3.7.2",
+   "3.7.3",
+   "3.7.4",
+   "3.8.1",
+   "3.9.1",
+   "3.9.2",
+   "3.10.0",
+   "3.10.1",
+   "3.10.2"
+  ],
+  "seen_urls": [
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/macos-arm64/ZCode-3.8.1-mac-arm64.dmg"
+  ],
+  "anchor_version": "3.8.1"
+ },
+ {
+  "name": "cdn-zcode.z.ai",
+  "template": "https://cdn-zcode.z.ai/zcode/electron/releases/{v}/macos-x64/ZCode-{v}-mac-x64.dmg",
+  "anchor": "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/macos-x64/ZCode-3.10.2-mac-x64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.4.0",
+   "3.4.1",
+   "3.4.2",
+   "3.5.2",
+   "3.5.3",
+   "3.6.1",
+   "3.6.2",
+   "3.6.4",
+   "3.6.5",
+   "3.7.1",
+   "3.7.2",
+   "3.7.3",
+   "3.7.4",
+   "3.7.5",
+   "3.8.1",
+   "3.9.1",
+   "3.9.2",
+   "3.10.0",
+   "3.10.1",
+   "3.10.2"
+  ],
+  "seen_urls": [
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/macos-x64/ZCode-3.10.2-mac-x64.dmg",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/macos-x64/ZCode-3.8.1-mac-x64.dmg"
+  ],
+  "anchor_version": "3.10.2"
+ },
+ {
+  "name": "cdn-zcode.z.ai",
+  "template": "https://cdn-zcode.z.ai/zcode/electron/releases/{v}/windows-x64/ZCode-{v}-win-x64.exe",
+  "anchor": "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe",
+  "kind": "range",
+  "expected_hits": [
+   "3.4.0",
+   "3.4.1",
+   "3.4.2",
+   "3.5.2",
+   "3.5.3",
+   "3.6.1",
+   "3.6.2",
+   "3.6.4",
+   "3.6.5",
+   "3.7.1",
+   "3.7.2",
+   "3.7.3",
+   "3.7.4",
+   "3.7.5",
+   "3.8.1",
+   "3.9.1",
+   "3.9.2",
+   "3.10.0",
+   "3.10.1",
+   "3.10.2"
+  ],
+  "seen_urls": [
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.0/windows-x64/ZCode-3.10.0-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.1/windows-x64/ZCode-3.10.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.4.0/windows-x64/ZCode-3.4.0-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.4.1/windows-x64/ZCode-3.4.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.4.2/windows-x64/ZCode-3.4.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.5.2/windows-x64/ZCode-3.5.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.5.3/windows-x64/ZCode-3.5.3-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.6.1/windows-x64/ZCode-3.6.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.6.2/windows-x64/ZCode-3.6.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.6.4/windows-x64/ZCode-3.6.4-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.6.5/windows-x64/ZCode-3.6.5-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.1/windows-x64/ZCode-3.7.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.2/windows-x64/ZCode-3.7.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.3/windows-x64/ZCode-3.7.3-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.4/windows-x64/ZCode-3.7.4-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.5/windows-x64/ZCode-3.7.5-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.9.1/windows-x64/ZCode-3.9.1-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/3.9.2/windows-x64/ZCode-3.9.2-win-x64.exe",
+   "https://cdn-zcode.z.ai/zcode/electron/releases/{v}/windows-x64/ZCode-{v}-win-x64.exe"
+  ],
+  "anchor_version": "3.10.2"
+ },
+ {
+  "name": "download-cdn.clf.jetbrains.com.cn",
+  "template": "https://download-cdn.clf.jetbrains.com.cn/idea/idea-{v}-aarch64.dmg",
+  "anchor": "https://download-cdn.clf.jetbrains.com.cn/idea/idea-2026.2.1-aarch64.dmg",
+  "kind": "range",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://download-cdn.clf.jetbrains.com.cn/idea/idea-2026.2.1-aarch64.dmg",
+   "https://download-cdn.clf.jetbrains.com.cn/idea/idea-{v}-aarch64.dmg"
+  ],
+  "anchor_version": "2026.2.1"
+ },
+ {
+  "name": "download.codebuddy.cn",
+  "template": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-{v}-825709d4.dmg",
+  "anchor": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.3.14.36279234-825709d4.dmg",
+  "kind": "range",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.3.14.36279234-825709d4.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "download.manus.im",
+  "template": "https://download.manus.im/Manus-Setup-{v}.dmg",
+  "anchor": "https://download.manus.im/Manus-Setup-1.7.2.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "1.2.1",
+   "1.2.2",
+   "1.2.4",
+   "1.2.5",
+   "1.3.2",
+   "1.3.3",
+   "1.3.4",
+   "1.4.1",
+   "1.4.2",
+   "1.5.0",
+   "1.5.1",
+   "1.5.2",
+   "1.5.3",
+   "1.5.5",
+   "1.6.0",
+   "1.6.1",
+   "1.6.2",
+   "1.6.3",
+   "1.6.4",
+   "1.6.5",
+   "1.7.0",
+   "1.7.1",
+   "1.7.2",
+   "1.7.3",
+   "1.7.4"
+  ],
+  "seen_urls": [
+   "https://download.manus.im/Manus-Setup-1.7.2.dmg"
+  ],
+  "anchor_version": "1.7.2"
+ },
+ {
+  "name": "dtapp-pub.dingtalk.com",
+  "template": "https://dtapp-pub.dingtalk.com/dingtalk-desktop/mac_dmg/Release/DingTalk_v8.5.0-Installer_57546446_arm64.dmg",
+  "anchor": "https://dtapp-pub.dingtalk.com/dingtalk-desktop/mac_dmg/Release/DingTalk_v8.5.0-Installer_57546446_arm64.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://dtapp-pub.dingtalk.com/dingtalk-desktop/mac_dmg/Release/DingTalk_v8.5.0-Installer_57546446_arm64.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "filecdn.minimax.chat",
+  "template": "https://filecdn.minimax.chat/public/minimax-agent-prod/release/MiniMax%20Code-{v}-arm64.dmg",
+  "anchor": "https://filecdn.minimax.chat/public/minimax-agent-prod/release/MiniMax%20Code-3.0.67-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.33",
+   "3.0.34",
+   "3.0.35",
+   "3.0.36",
+   "3.0.37",
+   "3.0.38",
+   "3.0.39",
+   "3.0.40",
+   "3.0.41",
+   "3.0.42",
+   "3.0.43",
+   "3.0.46",
+   "3.0.47",
+   "3.0.48",
+   "3.0.49",
+   "3.0.50",
+   "3.0.51",
+   "3.0.52",
+   "3.0.53",
+   "3.0.54",
+   "3.0.55",
+   "3.0.56",
+   "3.0.57",
+   "3.0.58",
+   "3.0.59",
+   "3.0.60",
+   "3.0.62",
+   "3.0.63",
+   "3.0.65",
+   "3.0.66",
+   "3.0.67",
+   "3.0.68"
+  ],
+  "seen_urls": [
+   "https://filecdn.minimax.chat/public/minimax-agent-prod/release/MiniMax%20Code-3.0.67-arm64.dmg"
+  ],
+  "anchor_version": "3.0.67"
+ },
+ {
+  "name": "filecdn.minimax.chat",
+  "template": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-{v}-arm64.dmg",
+  "anchor": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.0",
+   "3.0.1",
+   "3.0.2",
+   "3.0.3",
+   "3.0.4",
+   "3.0.5",
+   "3.0.6",
+   "3.0.7",
+   "3.0.8",
+   "3.0.9",
+   "3.0.10",
+   "10.0.0"
+  ],
+  "seen_urls": [
+   "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-arm64.dmg"
+  ],
+  "anchor_version": "3.0.2"
+ },
+ {
+  "name": "filecdn.minimax.chat",
+  "template": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-{v}-x64-Setup.exe",
+  "anchor": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-x64-Setup.exe",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.0",
+   "3.0.1",
+   "3.0.2",
+   "3.0.3",
+   "3.0.4",
+   "3.0.5",
+   "3.0.6",
+   "3.0.7",
+   "3.0.8",
+   "3.0.9",
+   "3.0.10",
+   "10.0.0"
+  ],
+  "seen_urls": [
+   "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-x64-Setup.exe"
+  ],
+  "anchor_version": "3.0.2"
+ },
+ {
+  "name": "filecdn.minimax.chat",
+  "template": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-{v}-x64.dmg",
+  "anchor": "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-x64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.0",
+   "3.0.1",
+   "3.0.2",
+   "3.0.3",
+   "3.0.4",
+   "3.0.5",
+   "3.0.6",
+   "3.0.7",
+   "3.0.8",
+   "3.0.9",
+   "3.0.10",
+   "10.0.0"
+  ],
+  "seen_urls": [
+   "https://filecdn.minimax.chat/public/minimax-hub/release/domestic/MiniMax%20Design-3.0.2-x64.dmg"
+  ],
+  "anchor_version": "3.0.2"
+ },
+ {
+  "name": "kimi-img.moonshot.cn",
+  "template": "https://kimi-img.moonshot.cn/app/download/mac/kimi_{v}.dmg",
+  "anchor": "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.0",
+   "3.0.1",
+   "3.0.2",
+   "3.0.3",
+   "3.0.4",
+   "3.1.0",
+   "3.1.1",
+   "3.1.2",
+   "3.1.3",
+   "3.1.4",
+   "3.2.0",
+   "3.2.1",
+   "3.2.2",
+   "3.2.3",
+   "3.2.4"
+  ],
+  "seen_urls": [
+   "https://kimi-img.moonshot.cn/app/download/mac/kimi_3.2.1.dmg"
+  ],
+  "anchor_version": "3.2.1"
+ },
+ {
+  "name": "kimi-img.moonshot.cn",
+  "template": "https://kimi-img.moonshot.cn/app/download/macos_x64/kimi_{v}.dmg",
+  "anchor": "https://kimi-img.moonshot.cn/app/download/macos_x64/kimi_3.0.12.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "3.0.5",
+   "3.0.6",
+   "3.0.9",
+   "3.0.12"
+  ],
+  "seen_urls": [
+   "https://kimi-img.moonshot.cn/app/download/macos_x64/kimi_3.0.12.dmg"
+  ],
+  "anchor_version": "3.0.12"
+ },
+ {
+  "name": "lf-cdn.trae.com.cn",
+  "template": "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/{v}/darwin/TraeCode_CN-darwin-arm64.dmg",
+  "anchor": "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/2.3.73737/darwin/TraeCode_CN-darwin-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "2.3.73647",
+   "2.3.73737"
+  ],
+  "seen_urls": [
+   "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/2.3.73737/darwin/TraeCode_CN-darwin-arm64.dmg"
+  ],
+  "anchor_version": "2.3.73737"
+ },
+ {
+  "name": "lf-cdn.trae.com.cn",
+  "template": "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/{v}/darwin/TraeWork_CN-darwin-arm64.dmg",
+  "anchor": "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/2.3.73734/darwin/TraeWork_CN-darwin-arm64.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "2.3.73644",
+   "2.3.73734"
+  ],
+  "seen_urls": [
+   "https://lf-cdn.trae.com.cn/obj/trae-com-cn/pkg/app/releases/stable/2.3.73734/darwin/TraeWork_CN-darwin-arm64.dmg"
+  ],
+  "anchor_version": "2.3.73734"
+ },
+ {
+  "name": "lf6-ug-sign.feishucdn.com",
+  "template": "https://lf6-ug-sign.feishucdn.com/ee-appcenter/b64e4272/Feishu-darwin_arm64-{v}-signed.dmg",
+  "anchor": "https://lf6-ug-sign.feishucdn.com/ee-appcenter/b64e4272/Feishu-darwin_arm64-7.74.16-signed.dmg",
+  "kind": "range",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://lf6-ug-sign.feishucdn.com/ee-appcenter/b64e4272/Feishu-darwin_arm64-7.74.16-signed.dmg"
+  ],
+  "anchor_version": "7.74.16"
+ },
+ {
+  "name": "lf9-apk.ugapk.cn",
+  "template": "https://lf9-apk.ugapk.cn/package/pc/doubao_client/2025010/doubao_client_webdaoliu_doudi_arm_macos_v2025010_e81c_1787311513.dmg",
+  "anchor": "https://lf9-apk.ugapk.cn/package/pc/doubao_client/2025010/doubao_client_webdaoliu_doudi_arm_macos_v2025010_e81c_1787311513.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://lf9-apk.ugapk.cn/package/pc/doubao_client/2025010/doubao_client_webdaoliu_doudi_arm_macos_v2025010_e81c_1787311513.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com",
+  "template": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-arm64.dmg",
+  "anchor": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-arm64.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-arm64.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com",
+  "template": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-x64.dmg",
+  "anchor": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-x64.dmg",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/Qoder-CN-IDE-darwin-x64.dmg"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com",
+  "template": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDESetup-x64.exe",
+  "anchor": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDESetup-x64.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDESetup-x64.exe"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com",
+  "template": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDEUserSetup-x64.exe",
+  "anchor": "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDEUserSetup-x64.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://qoder-ide-cn.oss-cn-hangzhou.aliyuncs.com/qoder/release/lastest/QoderCNIDEUserSetup-x64.exe"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "sfile.chatglm.cn",
+  "template": "https://sfile.chatglm.cn/apk/xinyu/windows/chatglm_{v}_universal.dmg",
+  "anchor": "https://sfile.chatglm.cn/apk/xinyu/windows/chatglm_2.0.0_universal.dmg",
+  "kind": "range",
+  "expected_hits": [
+   "2.0.0",
+   "2.0.2"
+  ],
+  "seen_urls": [
+   "https://sfile.chatglm.cn/apk/xinyu/windows/chatglm_2.0.0_universal.dmg"
+  ],
+  "anchor_version": "2.0.0"
+ },
+ {
+  "name": "update.autotyper.top",
+  "template": "https://update.autotyper.top/Download/AutoTyper-072203.exe",
+  "anchor": "https://update.autotyper.top/Download/AutoTyper-072203.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://update.autotyper.top/Download/AutoTyper-072203.exe"
+  ],
+  "anchor_version": ""
+ },
+ {
+  "name": "updatecdn.meeting.qq.com",
+  "template": "https://updatecdn.meeting.qq.com/cos/f44f137d5e598e8a1996e6e42f099d66/TencentMeeting_0300000000_3.45.2.405_x86_64.publish.officialwebsite.exe",
+  "anchor": "https://updatecdn.meeting.qq.com/cos/f44f137d5e598e8a1996e6e42f099d66/TencentMeeting_0300000000_3.45.2.405_x86_64.publish.officialwebsite.exe",
+  "kind": "single",
+  "expected_hits": [],
+  "seen_urls": [
+   "https://updatecdn.meeting.qq.com/cos/f44f137d5e598e8a1996e6e42f099d66/TencentMeeting_0300000000_3.45.2.405_x86_64.publish.officialwebsite.exe"
+  ],
+  "anchor_version": ""
+ }
+]
