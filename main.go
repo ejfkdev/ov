@@ -33,6 +33,40 @@ var (
 	globalHeaders  http.Header
 )
 
+// interactive 是否交互式运行: 标准输出与标准错误都是终端时为 true。
+// 非交互(被脚本/管道/其他程序调用)时: stdout 只流式输出发现的 URL(一行一个,
+// 确认一个立即打印一个); 进度/模板/完成等辅助信息只在交互式下打往 stderr。
+var interactive bool
+
+func isTerminal(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
+}
+
+// 非交互式实时输出的去重集合(进程内单任务)。
+var (
+	streamedMu sync.Mutex
+	streamed   = map[string]bool{}
+)
+
+// emitURL 非交互模式下实时打印一个确认可下载的 URL(一行一个, 按 URL 去重)。
+// 交互模式下不做任何事(结果在最后统一排序输出)。
+func emitURL(u string) {
+	if interactive || u == "" {
+		return
+	}
+	streamedMu.Lock()
+	defer streamedMu.Unlock()
+	if streamed[u] {
+		return
+	}
+	streamed[u] = true
+	fmt.Println(u)
+}
+
 type Prober struct {
 	modes []*versionMode
 }
@@ -145,6 +179,14 @@ func usage() {
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
 `)
+}
+
+// prerr 仅交互式模式下打印辅助信息到 stderr(进度/说明); 非交互时静默。
+func prerr(format string, a ...any) {
+	if !interactive {
+		return
+	}
+	fmt.Fprintf(os.Stderr, format, a...)
 }
 
 func fatal(format string, a ...any) {
@@ -283,6 +325,7 @@ func newUTLSRoundTripper(name string, skipTLS bool, proxyDial proxy.Dialer) http
 
 func main() {
 	o := parseFlags()
+	interactive = isTerminal(os.Stdout) && isTerminal(os.Stderr)
 	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)
@@ -376,25 +419,28 @@ func runPlatform(o *options, hc *http.Client) {
 	// 先验证原 URL 是否有效。
 	r := probeURLWithRetry(hc, o, raw)
 	if !r.found {
-		fmt.Fprintf(os.Stderr, "原 URL 当前不可下载: %s (状态 %d), 仍然尝试平台变体\n", r.kind, r.status)
+		prerr("原 URL 当前不可下载: %s (状态 %d), 仍尝试平台变体\n", r.kind, r.status)
 	}
 
 	variants := platformVariants(raw)
-	fmt.Fprintf(os.Stderr, "生成 %d 个平台变体, 探测中...\n", len(variants))
+	prerr("生成 %d 个平台变体, 探测中...\n", len(variants))
 	for _, v := range variants {
 		vr := probeURLWithRetry(hc, o, v)
 		if vr.found {
-			fmt.Printf("[平台] %s", v)
-			printSizes(o, vr)
-			fmt.Println()
+			emitURL(v) // 非交互: 直接流式输出 URL(交互模式则由下方打印带前缀的行)
+			if interactive {
+				fmt.Printf("[平台] %s", v)
+				printSizes(o, vr)
+				fmt.Println()
+			}
 		} else {
-			verbosef(o, "  %s -> %s", v, vr.kind)
+			prerr("  %s -> %s\n", v, vr.kind)
 		}
 	}
 }
 
 func verbosef(o *options, format string, a ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", a...)
+	prerr(format+"\n", a...)
 }
 
 // runEnum 核心: 识别版本 → 生成模板 → 枚举 → 并发探测 → 输出。
@@ -477,12 +523,12 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		fatal("%v", candErr)
 	}
 
-	fmt.Fprintf(os.Stderr, "模板: %s\n", tpl)
+	prerr("模板: %s\n", tpl)
 	if len(versions) > 0 {
-		fmt.Fprintf(os.Stderr, "识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
+		prerr("识别到 %d 个版本串: %s\n", len(versions), strings.Join(versions, ", "))
 	}
 	// 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
-	fmt.Fprintf(os.Stderr, "探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
+	prerr("探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", o.conc)
 
 	// 并发探测(两段式: 发现 + 校验):
 	//  - 发现 worker 只做 HEAD 快探, 命中疑似即立刻把校验任务丢进独立的校验队列,
@@ -498,7 +544,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	var progMu sync.Mutex
 	report := func() {
 		progMu.Lock()
-		fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", probed.Load(), hitsFound.Load())
+		prerr("\r探测中 ... %d 次请求, 命中 %d 个    ", probed.Load(), hitsFound.Load())
 		progMu.Unlock()
 	}
 
@@ -519,7 +565,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 				filtered = append(filtered, v)
 			}
 		}
-		fmt.Fprintf(os.Stderr, "主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
+		prerr("主版本预扫: 保活 %d 个主版本, 历史区候选 %d -> %d 个\n",
 			len(liveMajors), len(candidates), len(filtered))
 		candidates = filtered
 	}
@@ -536,12 +582,16 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 					// 校验通过: 用确认结果(真实 size/kind)覆盖疑似占位。
 					r.url = job.url
 					found[job.v] = r
+					mu.Unlock()
+					emitURL(job.url) // 非交互: 确认一个立即输出一个
 				} else if _, exists := found[job.v]; exists {
 					// 校验判定为"假 200"(文本错误页等): 撤销疑似命中。
 					delete(found, job.v)
 					hitsFound.Add(-1)
+					mu.Unlock()
+				} else {
+					mu.Unlock()
 				}
-				mu.Unlock()
 			}
 		}()
 	}
@@ -565,7 +615,10 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 					mu.Unlock()
 					if isNew {
 						hitsFound.Add(1)
-						if !r.verified { // HEAD 已确认的无需再 GET 校验
+						if r.verified {
+							// HEAD 已确认: 无需 GET 校验, 直接实时输出。
+							emitURL(r.url)
+						} else {
 							verifyJobs <- verifyJob{v: v, url: r.url, head: r}
 						}
 					}
@@ -584,7 +637,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	wg.Wait()
 	close(verifyJobs)
 	vwg.Wait() // 等所有魔数校验完成, found 里只剩真实可下载的版本
-	fmt.Fprintln(os.Stderr)
+	prerr("\n")
 
 	// smart 策略: 前沿生长, 从锚点向上发现更多版本。
 	frontierProbed := int64(0)
@@ -622,14 +675,17 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	}
 
 	count := 0
-	for _, v := range keys {
-		count++
-		fmt.Fprintln(out, resolvedURL(tpl, v, found[v]))
-		if o.sizes {
-			fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(found[v].size), found[v].kind)
+	if interactive {
+		// 交互模式: 最后统一排序输出(非交互模式已在确认时按 emitURL 实时单行输出)。
+		for _, v := range keys {
+			count++
+			fmt.Fprintln(out, resolvedURL(tpl, v, found[v]))
+			if o.sizes {
+				fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(found[v].size), found[v].kind)
+			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
+	prerr("完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
 		len(candidates), frontierProbed, len(candidates)+int(frontierProbed), count, time.Since(start).Round(time.Millisecond))
 
 	// 高级模式: 从命中的 URL 里再找其他平台。
@@ -647,7 +703,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 		if len(extra) > 0 {
-			fmt.Fprintf(os.Stderr, "平台变体探测: %d 个候选\n", len(extra))
+			prerr("平台变体探测: %d 个候选\n", len(extra))
 			keys := make([]string, 0, len(extra))
 			for k := range extra {
 				keys = append(keys, k)
@@ -656,9 +712,12 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			for _, u := range keys {
 				r := probeURLWithRetry(hc, o, u)
 				if r.found {
-					fmt.Fprintln(out, u)
-					if o.sizes {
-						fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
+					emitURL(u)
+					if interactive {
+						fmt.Fprintln(out, u)
+						if o.sizes {
+							fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
+						}
 					}
 				}
 			}
@@ -848,8 +907,8 @@ func probeURLWithQueryFallback(hc *http.Client, o *options, u string) probeResul
 // runRolling 滚动窗口模式: 当候选空间过大时, 以锚点为中心,
 // 向下扫描(主分量递减) + 向上前沿生长, 均使用滚动窗口命中刷新策略。
 func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []int) {
-	fmt.Fprintf(os.Stderr, "候选空间过大, 切换为滚动窗口模式 (连续 %d 次未命中停止)\n", o.stop)
-	fmt.Fprintf(os.Stderr, "锚点: %s\n", joinCompsW(anchor, widths))
+	prerr("候选空间过大, 切换为滚动窗口模式 (连续 %d 次未命中停止)\n", o.stop)
+	prerr("锚点: %s\n", joinCompsW(anchor, widths))
 
 	found := make(map[string]probeResult)
 	var mu sync.Mutex
@@ -912,18 +971,20 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 	out := os.Stdout
 
 	count := 0
-	for _, v := range keys {
-		mu.Lock()
-		r, ok := found[v]
-		mu.Unlock()
-		if ok {
-			count++
-			fmt.Fprintln(out, resolvedURL(tpl, v, r))
-			if o.sizes {
-				fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
+	if interactive {
+		for _, v := range keys {
+			mu.Lock()
+			r, ok := found[v]
+			mu.Unlock()
+			if ok {
+				count++
+				fmt.Fprintln(out, resolvedURL(tpl, v, r))
+				if o.sizes {
+					fmt.Fprintf(out, "  -> %s (%s)\n", sizeText(r.size), r.kind)
+				}
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "完成: 滚动窗口探测 %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
+	prerr("完成: 滚动窗口探测 %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n",
 		probed.Load(), count, time.Since(start).Round(time.Millisecond))
 }

@@ -11,9 +11,7 @@ package main
 //     从已知补丁+1 起线性探测补丁, 连续停止(补丁段通常密集, 命中率高)。
 
 import (
-	"fmt"
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,7 +59,7 @@ func (f *frontier) reportProbe() {
 		return
 	}
 	f.progMu.Lock()
-	fmt.Fprintf(os.Stderr, "\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
+	prerr("\r探测中 ... %d 次请求, 命中 %d 个    ", f.probed.Load(), f.hitsFound.Load())
 	f.progMu.Unlock()
 }
 
@@ -193,6 +191,9 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 			f.hits[v] = r
 		}
 		f.mu.Unlock()
+		if !exists {
+			emitURL(r.url) // 非交互: 前沿命中实时输出(结果已含 GET 校验)
+		}
 		return true, !exists
 	}
 	return false, false
