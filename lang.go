@@ -105,44 +105,21 @@ var msgEn = map[string]string{
 	"urlMustStartWithHttpOrHttps":    "URL must start with http:// or https://: %s",
 	"urlNotTraversable":              "URL not traversable: %s\n  %s\n  if you are sure it is enumerable, use -force-tpl (URL must contain {v})",
 	"urlSignedQuery":                 "URL has a signed/authenticated query (signatures differ per version) and cannot be traversed",
-	"usage": `ov v%s — enumerate all downloadable versions from one link
+	"usage": `ov v%s — enumerate every downloadable version from one versioned link
 Repository: %s
 
 Usage:
   ov [options] <download-url>
 
-Feed it one download link containing a version, and it auto-detects the
-version, then enumerates every downloadable version of the same family
-(fast HEAD checks + magic-byte verification, fake-200 pages excluded).
-Dynamic expansion by default: historical enumeration + wide-net majors +
-frontier growth. No range setup needed.
+Examples:
+  # Basic: auto-detect the version, enumerate all downloadable versions
+  ov "https://host/app-1.7.2.dmg"
 
-When piped / non-interactive (e.g. ov URL | cat), it outputs found URLs
-only — one per line, streamed in real time, no progress noise.
-
-Common examples:
-  # Basic: auto-detect 3.10.2 and enumerate all versions
-  ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
-
-  # Show sizes & types, newest first
-  ov -sizes -reverse "https://download.manus.im/Manus-Setup-1.7.2.dmg"
-
-  # Discover other platform builds from one link
-  ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
-
-  # Recover older versions when the release layout changed
-  ov -path-variants "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
-
-  # Proxy / custom headers / slow CDN
-  ov -x http://127.0.0.1:7890 "https://host/app-1.7.2.dmg"
-  ov -H "Authorization: Bearer xxx" "https://host/app-1.7.2.dmg"
-  ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
-
-  # Pipe/script consumption: pure URL stream
+  # Piped: stream found URLs only, one per line, as discovered
   ov "https://host/app-1.7.2.dmg" | while read -r u; do curl -LO "$u"; done
 
 Options:
-  -c N              concurrent probes (default 50)
+  -c N              probe concurrency (default 50)
   -timeout D        per-request timeout (default 10s)
   -k                skip TLS certificate verification
   -x PROXY          proxy (curl style): http://host:port or socks5://host:port
@@ -153,7 +130,8 @@ Options:
   -path-variants    on 404, fall back to generic path variants (drop a subdir / swap arch)
   -tls-fingerprint F TLS fingerprint spoofing: chrome, firefox, ios, android, ...
   -force-tpl        force {v} template probing (bypass non-traversable check)
-  -version, -V      show version and repository`,
+  -version, -V      show version and repository
+`,
 }
 
 // msgZh 中文目录。
@@ -206,38 +184,17 @@ var msgZh = map[string]string{
 	"urlMustStartWithHttpOrHttps":    "地址必须以 http:// 或 https:// 开头: %s",
 	"urlNotTraversable":              "该地址不可遍历: %s\n  %s\n  若确认可枚举, 可用 -force-tpl 强制切换为模板模式(需地址含 {v})",
 	"urlSignedQuery":                 "URL 含签名/鉴权查询串(不同版本的签名不同, 换版本即失效), 不可遍历",
-	"usage": `ov v%s — 从一条下载链接枚举出所有可下载版本
+	"usage": `ov v%s — 从一条带版本号的下载链接, 自动枚举全部可下载版本
 仓库: %s
 
 用法:
   ov [选项] <下载地址>
 
-把一个带版本号的下载链接丢进来, 自动识别版本号并枚举
-同系列的所有可下载版本(HEAD 快探 + 魔数校验, 自动排除假 200)。
-默认动态扩展: 历史区枚举 + 广撒网主版本 + 前沿生长, 无需指定范围。
+示例:
+  # 基本用法: 自动识别版本号, 枚举出全部可下载版本
+  ov "https://host/app-1.7.2.dmg"
 
-管道/非交互运行时(如 ov URL | cat), 只实时输出发现的 URL:
-一行一个、发现即打印, 无任何进度信息。
-
-常用示例:
-  # 最基本: 自动识别 3.10.2 并枚举全部版本
-  ov "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
-
-  # 输出大小与类型, 新版本在前
-  ov -sizes -reverse "https://download.manus.im/Manus-Setup-1.7.2.dmg"
-
-  # 从一个平台的链接找到其他平台的下载地址
-  ov -platform "https://cdn-zcode.z.ai/zcode/electron/releases/3.8.1/windows-x64/ZCode-3.8.1-win-x64.exe"
-
-  # 发布目录改过版(旧版少一层子目录)也能找回旧版
-  ov -path-variants "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/windows-x64/ZCode-3.10.2-win-x64.exe"
-
-  # 走代理 / 带自定义头 / 跑慢速 CDN
-  ov -x http://127.0.0.1:7890 "https://host/app-1.7.2.dmg"
-  ov -H "Authorization: Bearer xxx" "https://host/app-1.7.2.dmg"
-  ov -c 25 -timeout 5s "https://host/app-1.7.2.dmg"
-
-  # 管道/脚本消费: 纯 URL 实时流
+  # 管道: 只实时输出发现的 URL, 一行一个
   ov "https://host/app-1.7.2.dmg" | while read -r u; do curl -LO "$u"; done
 
 选项:
@@ -252,5 +209,6 @@ var msgZh = map[string]string{
   -path-variants    主路径 404 时回退通用路径变体(去子目录/换架构名)
   -tls-fingerprint F TLS 指纹伪装: chrome、firefox、ios、android 等
   -force-tpl        强制使用 {v} 模板探测(绕过不可遍历检查)
-  -version, -V      显示版本号与仓库地址`,
+  -version, -V      显示版本号与仓库地址
+`,
 }
