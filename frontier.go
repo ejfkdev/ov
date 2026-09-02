@@ -91,8 +91,8 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 	launch := func(comp []int) *future {
 		c := make(chan probeOutcome, 1)
 		go func() {
-			hit, added := f.probe(comp)
-			c <- probeOutcome{hit: hit, added: added}
+			hit, _ := f.probe(comp)
+			c <- probeOutcome{hit: hit}
 		}()
 		return &future{c: c}
 	}
@@ -138,8 +138,7 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 
 // probeOutcome 一次并发探测的结果。
 type probeOutcome struct {
-	hit   bool // 候选是否存在(含 seeds 预置命中)
-	added bool // 是否首次写入 hits(真正的新发现)
+	hit bool // 候选是否存在(含 seeds 预置命中)
 }
 
 func (f *frontier) render(comp []int) string {
