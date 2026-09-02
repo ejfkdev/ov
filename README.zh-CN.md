@@ -2,7 +2,7 @@
 
 > :us: English: [README.md](./README.md)
 
-[![Go Version](https://img.shields.io/badge/Go-1.22-blue)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25-blue)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 给定一个包含版本号的下载地址，自动识别版本号（标准版本 / 日期 / 纯数字 / 字母混合），

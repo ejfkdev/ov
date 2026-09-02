@@ -2,7 +2,7 @@
 
 > :cn: 中文文档: [README.zh-CN.md](./README.zh-CN.md)
 
-[![Go Version](https://img.shields.io/badge/Go-1.22-blue)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.25-blue)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Give it one download link containing a version number; it auto-detects the version
