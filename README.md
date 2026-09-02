@@ -14,8 +14,7 @@ Interactive and piped/scripted usage are handled automatically (see
 
 ## Table of contents
 
-- [Build](#build)
-- [Install (prebuilt releases)](#install-prebuilt-releases)
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
   - [1. Version detection (auto)](#1-version-detection-auto)
@@ -29,15 +28,25 @@ Interactive and piped/scripted usage are handled automatically (see
 
 ---
 
-## Build
+## Installation
+
+### Homebrew (macOS)
 
 ```bash
-go build -o ov .
+brew install ejfkdev/tap/ov
 ```
 
-Linux / macOS / Windows, amd64 / arm64 are supported.
+### go install
 
-## Install (prebuilt releases)
+Requires Go 1.25+:
+
+```bash
+go install github.com/ejfkdev/ov@latest
+```
+
+The binary is installed into `$(go env GOPATH)/bin`.
+
+### Prebuilt releases
 
 Every `v*` tag is built by GitHub Actions into 6 **bare binaries** (no archive),
 attached to the [Releases](https://github.com/ejfkdev/ov/releases) page:
@@ -51,6 +60,15 @@ attached to the [Releases](https://github.com/ejfkdev/ov/releases) page:
 Binaries are statically linked and stripped of all extra info
 (`-s -w -trimpath -buildvcs=false -buildid=`) for the smallest possible size.
 The version shown by `-version`/`-V` and in `-h` is the tag version.
+After downloading, rename it to `ov` and `chmod +x` on Linux/macOS.
+
+### Build from source
+
+```bash
+go build -o ov .
+```
+
+Linux / macOS / Windows, amd64 / arm64 are supported.
 
 ## Quick start
 

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -29,6 +30,17 @@ const defaultUserAgent = "Mozilla/5.0 (compatible; ov-prober/1.0)"
 
 // version 构建时注入的版本号(-ldflags "-X main.version=v1.2.3"), 本地构建默认 dev。
 var version = "dev"
+
+func init() {
+	// 未注入版本时(典型: go install github.com/ejfkdev/ov@latest),
+	// 回退读取模块构建信息里的版本(如 v0.1.0), 保证 -version/-h 显示真实 tag。
+	if version != "dev" {
+		return
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		version = strings.TrimPrefix(bi.Main.Version, "v")
+	}
+}
 
 // repoURL 项目仓库地址。
 const repoURL = "https://github.com/ejfkdev/ov"

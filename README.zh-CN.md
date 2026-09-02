@@ -12,8 +12,7 @@
 
 ## 目录
 
-- [编译](#编译)
-- [安装（预编译产物）](#安装预编译产物)
+- [安装](#安装)
 - [快速开始](#快速开始)
 - [工作原理](#工作原理)
   - [1. 版本识别（自动）](#1-版本识别自动)
@@ -27,15 +26,25 @@
 
 ---
 
-## 编译
+## 安装
+
+### Homebrew（macOS）
 
 ```bash
-go build -o ov .
+brew install ejfkdev/tap/ov
 ```
 
-支持 Linux / macOS / Windows，amd64 / arm64 架构。
+### go install
 
-## 安装（预编译产物）
+需 Go 1.25+：
+
+```bash
+go install github.com/ejfkdev/ov@latest
+```
+
+二进制会安装到 `$(go env GOPATH)/bin`。
+
+### 下载预编译产物
 
 每个 `v*` tag 由 GitHub Actions 构建出 6 个**裸二进制**（不再二次打包压缩包），
 直接附到 [Releases](https://github.com/ejfkdev/ov/releases) 页面：
@@ -49,6 +58,15 @@ go build -o ov .
 二进制均已去除符号表、调试信息、编译路径等全部额外信息
 （`-s -w -trimpath -buildvcs=false -buildid=`）并静态链接，体积尽可能小。
 `-version`/`-V` 与 `-h` 中显示的版本号即对应 tag 的版本号。
+下载后重命名为 `ov` 并 `chmod +x`（Linux / macOS）。
+
+### 源码编译
+
+```bash
+go build -o ov .
+```
+
+支持 Linux / macOS / Windows，amd64 / arm64 架构。
 
 ## 快速开始
 
