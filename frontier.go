@@ -34,6 +34,7 @@ type frontier struct {
 	hitsFound *atomic.Int64 // 全程命中计数(用于实时进度)
 	budget    int64
 	aborted   atomic.Bool // 预算是否耗尽(并发探测下用原子标志)
+	done      atomic.Bool // run() 已结束: 收尾在途探测不再刷新进度行, 避免污染结果输出
 	mu        sync.Mutex
 	progMu    sync.Mutex    // 进度行输出的串行化
 	sem       chan struct{} // 全局在途请求上限(与 -c 一致), 防嵌套并发把并发度叠到数百
@@ -55,7 +56,7 @@ func newFrontier(hc *http.Client, o *options, tpl string, widths []int,
 
 // reportProbe 刷新实时进度行(每次探测完成都刷新, 避免前沿阶段看似卡住)。
 func (f *frontier) reportProbe() {
-	if f.probed == nil || f.hitsFound == nil {
+	if f.done.Load() || f.probed == nil || f.hitsFound == nil {
 		return
 	}
 	f.progMu.Lock()
@@ -115,9 +116,6 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 		}
 		o := <-window[0].c
 		window = window[1:]
-		if o.added {
-			f.reportHit()
-		}
 		out = append(out, o.hit)
 		if o.hit {
 			miss = 0
@@ -128,9 +126,6 @@ func (f *frontier) probeParallel(gen func() ([]int, bool), stop int) []bool {
 				// 以免错过截断点之后恰好命中的版本(并发预取会提前发射)。
 				for _, w := range window {
 					oo := <-w.c
-					if oo.added {
-						f.reportHit()
-					}
 					out = append(out, oo.hit)
 				}
 				window = nil
@@ -191,12 +186,18 @@ func (f *frontier) probe(comp []int) (hit, added bool) {
 			f.hits[v] = r
 		}
 		f.mu.Unlock()
-		if !exists && r.verified {
-			// 仅在经 HEAD 头确认或 GET 魔数校验的真实命中才实时输出,
-			// 与历史区"确认一个输出一个"的语义一致。
-			emitURL(r.url)
+		added = !exists
+		if added {
+			// 命中计数统一在这里做: 所有入口(撒网/副版本扫描/补丁等)
+			// 都经过 probe, 进度里的命中数才不会漏计。
+			f.reportHit()
+			if r.verified {
+				// 仅在经 HEAD 头确认或 GET 魔数校验的真实命中才实时输出,
+				// 与历史区"确认一个输出一个"的语义一致。
+				emitURL(r.url)
+			}
 		}
-		return true, !exists
+		return true, added
 	}
 	return false, false
 }
@@ -232,12 +233,15 @@ func (f *frontier) probeMajorExists(M, P int, anchor []int) bool {
 			res <- hit
 		}(pc)
 	}
+	// 收集全部在途结果再返回(不提前退场): 游离探测会在 run() 结束后才完成,
+	// 届时结果既漏计入 found 合并、进度行又会污染输出。
+	hitAny := false
 	for i := 0; i < launched; i++ {
 		if <-res {
-			return true
+			hitAny = true
 		}
 	}
-	return false
+	return hitAny
 }
 
 // sparseMinorProbe 对主版本 M 做稀疏副版本撒网, 抓"跳过 frontStop 间距"的远端副版本。
@@ -343,12 +347,14 @@ func (f *frontier) probeMinorExists(M, mm int) bool {
 			res <- patchRes{pz, hit}
 		}(pz)
 	}
+	// 同 probeMajorExists: 收齐在途结果再返回, 避免游离探测晚于 run() 完成。
+	hitAny := false
 	for i := 0; i < launched; i++ {
 		if (<-res).hit {
-			return true
+			hitAny = true
 		}
 	}
-	return false
+	return hitAny
 }
 
 // scanMinorsPatchAware 扫描主版本 M 的副版本 0..hi[1], 每个副版本用
@@ -574,9 +580,7 @@ func (f *frontier) scanDown(anchor []int) {
 	P := len(anchor)
 
 	// 先探锚点自身(恰好一次; 锚点通常命中, 不能放进带 miss 截断的并发流)。
-	if _, added := f.probe(anchor); added {
-		f.reportHit()
-	}
+	f.probe(anchor)
 
 	if P == 1 {
 		f.sweep(func(v int) []int { return []int{v} }, rangeVals(anchor[0]-1, 0, -1))
@@ -756,6 +760,7 @@ func (f *frontier) run(anchor []int) {
 	}
 	scanWG.Wait()
 	sort.Ints(majorHits)
+	f.done.Store(true) // 收尾: 之后的探测(若有)不再刷新进度行
 }
 
 // scanMajor 对一个主版本 M 做副版本扫描 + 稀疏副版本撒网 + 补丁填充,

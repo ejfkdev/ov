@@ -632,7 +632,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 		prerr(tr("识别到 %d 个版本串: %s\n", "detected %d version(s): %s\n"), len(versions), strings.Join(versions, ", "))
 	}
 	// 范围为动态(历史区 + 广撒网 + 前沿扩展), 不预先固定终点。
-	prerr(tr("探测: 并发 %d, 范围动态扩展(历史区 + 广撒网 + 前沿)\n", "probing: concurrency %d, dynamic range (history + wide-net + frontier)\n"), o.conc)
+	prerr(tr("探测: 并发 %d\n", "probing: concurrency %d\n"), o.conc)
 
 	// 并发探测(两段式: 发现 + 校验):
 	//  - 发现 worker 只做 HEAD 快探, 命中疑似即立刻把校验任务丢进独立的校验队列,
@@ -746,10 +746,9 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	wg.Wait()
 	close(verifyJobs)
 	vwg.Wait() // 等所有魔数校验完成, found 里只剩真实可下载的版本
-	prerr("\n")
 
 	// smart 策略: 前沿生长, 从锚点向上发现更多版本。
-	frontierProbed := int64(0)
+	// 进度行保持原地刷新, 不为前后两个阶段断开成两行。
 	if o.strategy == "smart" && len(anchor) > 0 {
 		seeds := make(map[string]bool, len(found))
 		mu.Lock()
@@ -766,7 +765,6 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 		mu.Unlock()
-		frontierProbed = probed.Load() - int64(len(candidates))
 	}
 
 	// 输出(按版本数值升序, 历史区+前沿区合并)。
@@ -785,6 +783,7 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 
 	count := 0
 	if interactive {
+		prerr("\n") // 结束进度行, 让结果 URL 从新行开始
 		// 交互模式: 最后统一排序输出(非交互模式已在确认时按 emitURL 实时单行输出)。
 		for _, v := range keys {
 			count++
@@ -794,8 +793,8 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 			}
 		}
 	}
-	prerr(tr("完成: 历史区 %d + 前沿区 %d = %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n", "done: %d history + %d frontier = %d requests, %d downloadable URLs, took %s\n"),
-		len(candidates), frontierProbed, len(candidates)+int(frontierProbed), count, time.Since(start).Round(time.Millisecond))
+	prerr(tr("完成: %d 个请求, 命中 %d 个, 耗时 %s\n", "done: %d requests, %d hits, took %s\n"),
+		probed.Load(), count, time.Since(start).Round(time.Millisecond))
 
 	// 高级模式: 从命中的 URL 里再找其他平台。
 	if o.platform {
@@ -1081,6 +1080,7 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 
 	count := 0
 	if interactive {
+		prerr("\n") // 结束进度行, 让结果 URL 从新行开始
 		for _, v := range keys {
 			mu.Lock()
 			r, ok := found[v]
@@ -1094,6 +1094,6 @@ func runRolling(o *options, hc *http.Client, tpl string, anchor []int, widths []
 			}
 		}
 	}
-	prerr(tr("完成: 滚动窗口探测 %d 个请求, 命中 %d 个可下载地址, 耗时 %s\n", "done: rolling window probed %d requests, %d downloadable URLs, took %s\n"),
+	prerr(tr("完成: %d 个请求, 命中 %d 个, 耗时 %s\n", "done: %d requests, %d hits, took %s\n"),
 		probed.Load(), count, time.Since(start).Round(time.Millisecond))
 }
