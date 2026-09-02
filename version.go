@@ -65,7 +65,7 @@ func isTraversable(u string) (bool, string) {
 	// 先查查询串签名参数(在剥离 query 前): CloudFront/OSS/S3 等带签名的直链,
 	// 换版本号会使签名失效返回 403, 无法遍历。
 	if reQuerySig.MatchString(u) {
-		return false, tr("URL 含签名/鉴权查询串(不同版本的签名不同, 换版本即失效), 不可遍历", "URL has a signed/authenticated query (signatures differ per version) and cannot be traversed")
+		return false, t("urlSignedQuery")
 	}
 	path := u
 	if i := strings.Index(path, "://"); i >= 0 {
@@ -74,26 +74,26 @@ func isTraversable(u string) (bool, string) {
 	if i := strings.IndexByte(path, '/'); i >= 0 {
 		path = path[i:]
 	} else {
-		return false, tr("地址没有路径", "URL has no path")
+		return false, t("urlHasNoPath")
 	}
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		path = path[:i]
 	}
 
 	if reUUID.MatchString(path) {
-		return false, tr("路径含 UUID(随机签名, 不可遍历)", "path contains a UUID (random signature, not traversable)")
+		return false, t("pathHasUUID")
 	}
 	if reHexToken.MatchString(path) {
-		return false, tr("路径含 6+ 位十六进制串(签名/哈希目录, 不可遍历)", "path contains a 6+ hex token (signature/hash dir, not traversable)")
+		return false, t("pathHasHexToken")
 	}
 	if reLongNumPath.MatchString(path) {
-		return false, tr("路径含 7+ 位数字目录(分发 ID, 不可遍历)", "path contains a 7+ digit dir (distribution ID, not traversable)")
+		return false, t("pathHasDigitDir")
 	}
 	// Build/日期后缀(如 _260609、-20260819、.36279234)。
 	// 仅当路径同时存在点分隔的独立版本号时才判定为"构建元数据";
 	// 否则(如 AutoTyper_072203, 长数字本身就是版本)放行交给识别。
 	if reBuildSeq.MatchString(path) && stdVersionRe.MatchString(path) {
-		return false, tr("路径同时含版本号与 Build/日期后缀, 不可遍历", "path contains both a version and a build/date suffix, not traversable")
+		return false, t("pathHasBuildSuffix")
 	}
 	return true, ""
 }
@@ -226,21 +226,21 @@ func parseInts(s string) ([]int, error) {
 func parseIntsW(s string) ([]int, []int, error) {
 	parts := strings.Split(strings.TrimSpace(s), ".")
 	if len(parts) == 0 || len(parts) > maxVersionComponents {
-		return nil, nil, fmt.Errorf(tr("非法版本 %q: 组件数量应在 1-%d 之间", "invalid version %q: 1-%d components expected"), s, maxVersionComponents)
+		return nil, nil, fmt.Errorf(t("invalidVersionCount"), s, maxVersionComponents)
 	}
 	comp := make([]int, len(parts))
 	widths := make([]int, len(parts))
 	for i, p := range parts {
 		p = strings.TrimSpace(p)
 		if p == "" {
-			return nil, nil, fmt.Errorf(tr("非法版本 %q: 存在空组件", "invalid version %q: empty component"), s)
+			return nil, nil, fmt.Errorf(t("invalidVersionEmptyComponent"), s)
 		}
 		if strings.HasPrefix(p, "0") && len(p) > 1 {
 			widths[i] = len(p)
 		}
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 || n > maxVersionValue {
-			return nil, nil, fmt.Errorf(tr("非法版本 %q: 组件必须是 0-%d 的数字", "invalid version %q: components must be 0-%d"), s, maxVersionValue)
+			return nil, nil, fmt.Errorf(t("invalidVersionValue"), s, maxVersionValue)
 		}
 		comp[i] = n
 	}
@@ -300,7 +300,7 @@ func enumerateVersions(from, to, widths []int, maxCandidates int) ([]string, err
 	out := make([]string, 0, 1024)
 	for {
 		if len(out) >= maxCandidates {
-			return nil, fmt.Errorf(tr("候选空间过大(%d+), 将切换滚动窗口模式", "candidate space too large (%d+); switching to rolling window"), maxCandidates)
+			return nil, fmt.Errorf(t("candidateSpaceTooLarge"), maxCandidates)
 		}
 		out = append(out, joinCompsW(cur, w))
 		i := n - 1
