@@ -9,3 +9,4 @@ ov
 *.tmp
 testdata/
 .DS_Store
+.zcode/
