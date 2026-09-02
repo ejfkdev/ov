@@ -5,38 +5,21 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        goos:
-          - linux
-          - windows
-          - darwin
-        goarch:
-          - amd64
-          - arm64
-        include:
-          - goos: linux
-            goarch: amd64
-            ext: ''
-          - goos: linux
-            goarch: arm64
-            ext: ''
-          - goos: windows
-            goarch: amd64
-            ext: '.exe'
-          - goos: windows
-            goarch: arm64
-            ext: '.exe'
-          - goos: darwin
-            goarch: amd64
-            ext: ''
-          - goos: darwin
-            goarch: arm64
-            ext: ''
-
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,24 +29,54 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Get dependencies
-        run: go mod download
-
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Build (最小化二进制)
         run: |
-          ext='${{ matrix.ext }}'
+          ext=''
+          [ "$GOOS" = windows ] && ext='.exe'
           name="ov-${GOOS}-${GOARCH}${ext}"
-          go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o "$name" .
-          upx -9 "$name"
-          echo "$name" >> artifacts.txt
+          echo "NAME=${name}" >> "$GITHUB_ENV"
+          # -s -w: 去符号表与 DWARF 调试信息
+          # -trimpath: 去编译路径; -buildvcs=false: 不嵌入 git 元数据
+          # -buildid=: 清空构建 ID; CGO_ENABLED=0: 纯静态、无 libc 依赖
+          go build -trimpath -buildvcs=false \
+            -ldflags="-s -w -buildid= -X main.version=${GITHUB_REF_NAME#v}" \
+            -o "$name" .
+
+      - name: UPX compress (mac 与不支持的格式自动跳过)
+        run: |
+          case "$GOOS" in
+            darwin)
+              echo "UPX 不支持 macOS 二进制, 跳过压缩"
+              exit 0
+              ;;
+          esac
+          if upx --best --lzma "$NAME"; then
+            echo "UPX 压缩完成"
+          else
+            echo "UPX 不支持 ${GOOS}/${GOARCH}, 保留未压缩二进制"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ov-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          path: ov-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: ov-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.NAME }}
           compression-level: 0
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List binaries
+        run: ls -lah dist/
+
+      - name: Upload release assets (裸二进制, 不再打包)
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ov-*

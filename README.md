@@ -15,6 +15,7 @@ Interactive and piped/scripted usage are handled automatically (see
 ## Table of contents
 
 - [Build](#build)
+- [Install (prebuilt releases)](#install-prebuilt-releases)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
   - [1. Version detection (auto)](#1-version-detection-auto)
@@ -35,6 +36,21 @@ go build -o ov .
 ```
 
 Linux / macOS / Windows, amd64 / arm64 are supported.
+
+## Install (prebuilt releases)
+
+Every `v*` tag is built by GitHub Actions into 6 **bare binaries** (no archive),
+attached to the [Releases](https://github.com/ejfkdev/ov/releases) page:
+
+| Asset | Notes |
+|---|---|
+| `ov-linux-amd64`, `ov-linux-arm64` | UPX-compressed |
+| `ov-darwin-amd64`, `ov-darwin-arm64` | not compressed (UPX does not support macOS binaries) |
+| `ov-windows-amd64.exe`, `ov-windows-arm64.exe` | UPX-compressed when the toolchain supports the format |
+
+Binaries are statically linked and stripped of all extra info
+(`-s -w -trimpath -buildvcs=false -buildid=`) for the smallest possible size.
+The version shown by `-version`/`-V` and in `-h` is the tag version.
 
 ## Quick start
 

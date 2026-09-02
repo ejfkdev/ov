@@ -13,6 +13,7 @@
 ## 目录
 
 - [编译](#编译)
+- [安装（预编译产物）](#安装预编译产物)
 - [快速开始](#快速开始)
 - [工作原理](#工作原理)
   - [1. 版本识别（自动）](#1-版本识别自动)
@@ -33,6 +34,21 @@ go build -o ov .
 ```
 
 支持 Linux / macOS / Windows，amd64 / arm64 架构。
+
+## 安装（预编译产物）
+
+每个 `v*` tag 由 GitHub Actions 构建出 6 个**裸二进制**（不再二次打包压缩包），
+直接附到 [Releases](https://github.com/ejfkdev/ov/releases) 页面：
+
+| 产物 | 说明 |
+|---|---|
+| `ov-linux-amd64`、`ov-linux-arm64` | 已 UPX 压缩 |
+| `ov-darwin-amd64`、`ov-darwin-arm64` | 不压缩（UPX 不支持 macOS 二进制） |
+| `ov-windows-amd64.exe`、`ov-windows-arm64.exe` | 工具链支持该格式时 UPX 压缩 |
+
+二进制均已去除符号表、调试信息、编译路径等全部额外信息
+（`-s -w -trimpath -buildvcs=false -buildid=`）并静态链接，体积尽可能小。
+`-version`/`-V` 与 `-h` 中显示的版本号即对应 tag 的版本号。
 
 ## 快速开始
 
