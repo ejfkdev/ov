@@ -217,21 +217,22 @@ CLI 文案（帮助、进度、错误）随系统语言自动切换：中文语�
 ## 发布流程（维护者）
 
 ```bash
-# 给 tag 写上有意义的描述——它就是这次发布的门面（`git tag -n` 可见）
-git tag -a v0.1.3 -m "v0.1.3: 修复 %20 版本识别; 找回仅含补丁的副版本族"
-git push origin v0.1.3
+# 一条命令: 打 tag(带描述) → 等 CI 产物 → 刷新 brew/scoop
+scripts/release.sh v0.1.3 -m "v0.1.3: 修复 %20 版本识别; 找回仅含补丁的副版本族"
 ```
 
-推送 tag 后，[发布工作流](.github/workflows/release.yml)会自动：
+`scripts/release.sh` 的流程（与其他 ejfkdev 项目一致）：
 
-1. 构建 6 个裁剪/UPX 压缩后的裸二进制并挂到 GitHub Release（发布说明自动生成）；
-2. 触发 [homebrew-tap](https://github.com/ejfkdev/homebrew-tap) 与
+1. 检查工作树干净并跑 `go build` / `go vet`；
+2. 创建 **annotated tag，描述即这次发布的门面**（`git tag -n` 可见）并推送；
+3. 等待[发布工作流](.github/workflows/release.yml)：6 个裁剪/UPX 压缩后的裸二进制 + 自动生成的发布说明；
+4. 触发 [homebrew-tap](https://github.com/ejfkdev/homebrew-tap) 与
    [scoop-bucket](https://github.com/ejfkdev/scoop-bucket) 的自动更新工作流，
    让 `brew install ejfkdev/tap/ov` 与 `scoop install ov` 立刻拿到新版本，
    不用等它们的每日定时任务。
 
-第 2 步需要仓库 secret `PACKAGES_TOKEN`（对这两个仓库有 **Actions: write** 权限的 token）；
-未配置时发版照常成功，Homebrew/Scoop 会在每日定时任务里更新。
+前置条件：工作树干净 + 本机 `gh` 已登录且可访问这两个仓库——**不需要任何 CI secret**，
+触发动作在你本机完成（脚本可安全重跑：tag 已存在会自动跳过）。
 
 ## 许可证
 

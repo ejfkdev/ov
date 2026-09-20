@@ -82,25 +82,6 @@ jobs:
           files: dist/ov-*
           generate_release_notes: true
 
-  # 发布完成后立即触发 brew tap 与 scoop bucket 的自动更新(否则要等它们的每日定时任务)。
-  # 需要仓库 secret PACKAGES_TOKEN: 一个对 ejfkdev/homebrew-tap 与 ejfkdev/scoop-bucket
-  # 有 Actions 写权限的 fine-grained PAT(或 classic PAT, 需 repo+workflow scope)。
-  # 未配置时本 job 跳过并给出说明, 不影响发版; 两个仓库仍会在每日定时任务中更新。
-  packages:
-    needs: release
-    runs-on: ubuntu-latest
-    env:
-      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
-    steps:
-      - name: Trigger Homebrew tap & Scoop bucket auto-update
-        if: env.PACKAGES_TOKEN != ''
-        env:
-          GH_TOKEN: ${{ env.PACKAGES_TOKEN }}
-        run: |
-          gh workflow run "Auto-update formulae" --repo ejfkdev/homebrew-tap
-          gh workflow run "Auto-update manifests" --repo ejfkdev/scoop-bucket
-          echo "已触发 brew/scoop 更新工作流"
-
-      - name: Skip notice (PACKAGES_TOKEN 未配置)
-        if: env.PACKAGES_TOKEN == ''
-        run: echo "未配置 PACKAGES_TOKEN, 跳过 brew/scoop 即时更新; 它们会在每日定时任务中自动更新"
+  # brew/scoop 的即时更新由本地 scripts/release.sh 在 CI 出产物后触发
+  # (gh workflow run 到 homebrew-tap / scoop-bucket, 用开发者本机 gh 登录态,
+  # 无需任何 CI secret —— 与 ddc 的发布方式一致)。

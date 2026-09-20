@@ -231,24 +231,26 @@ CLI text (help, progress, errors) follows the system locale: Chinese locales
 ## Releasing (maintainers)
 
 ```bash
-# Write a real tag description — it is the release's headline (`git tag -n` shows it)
-git tag -a v0.1.3 -m "v0.1.3: fix %20 version detection; recover patch-only minor families"
-git push origin v0.1.3
+# One command: tag (with a real description) → CI artifacts → brew/scoop refresh
+scripts/release.sh v0.1.3 -m "v0.1.3: fix %20 version detection; recover patch-only families"
 ```
 
-The tag push runs the [release workflow](.github/workflows/release.yml), which:
+`scripts/release.sh` (the same flow as the other ejfkdev projects):
 
-1. builds the 6 stripped / UPX-compressed bare binaries and attaches them to the
-   GitHub release (release notes are generated automatically);
-2. dispatches the auto-update workflows in
+1. checks the worktree is clean and runs `go build` / `go vet`;
+2. creates an **annotated tag whose message is the release's headline**
+   (`git tag -n` shows it) and pushes it;
+3. waits for the [release workflow](.github/workflows/release.yml) — 6 stripped /
+   UPX-compressed bare binaries plus auto-generated release notes;
+4. dispatches the auto-update workflows in
    [homebrew-tap](https://github.com/ejfkdev/homebrew-tap) and
    [scoop-bucket](https://github.com/ejfkdev/scoop-bucket), so
-   `brew install ejfkdev/tap/ov` and `scoop install ov` pick up the new version
-   immediately instead of waiting for their daily schedule.
+   `brew install ejfkdev/tap/ov` and `scoop install ov` get the new version right away
+   instead of waiting for their daily schedule.
 
-Step 2 requires the repository secret `PACKAGES_TOKEN` — a token with **Actions: write**
-on those two repositories. Without it the release still succeeds; Homebrew/Scoop then
-update on their daily cron.
+Prerequisites: a clean worktree and a local `gh` login with access to the tap/bucket
+repos — **no CI secret involved**, the dispatch runs from your machine (re-running the
+script is safe: an existing tag is skipped).
 
 ## License
 
