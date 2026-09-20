@@ -26,6 +26,7 @@ Interactive and piped/scripted usage are handled automatically (see
   - [6. Piped & non-interactive output](#6-piped--non-interactive-output)
 - [Options](#options)
 - [Real-world results](#real-world-results)
+- [Releasing (maintainers)](#releasing-maintainers)
 
 ---
 
@@ -226,3 +227,29 @@ CLI text (help, progress, errors) follows the system locale: Chinese locales
 | jadx 1.5.0 | 90 | 988 | date-ish versions too |
 
 </details>
+
+## Releasing (maintainers)
+
+```bash
+# Write a real tag description — it is the release's headline (`git tag -n` shows it)
+git tag -a v0.1.3 -m "v0.1.3: fix %20 version detection; recover patch-only minor families"
+git push origin v0.1.3
+```
+
+The tag push runs the [release workflow](.github/workflows/release.yml), which:
+
+1. builds the 6 stripped / UPX-compressed bare binaries and attaches them to the
+   GitHub release (release notes are generated automatically);
+2. dispatches the auto-update workflows in
+   [homebrew-tap](https://github.com/ejfkdev/homebrew-tap) and
+   [scoop-bucket](https://github.com/ejfkdev/scoop-bucket), so
+   `brew install ejfkdev/tap/ov` and `scoop install ov` pick up the new version
+   immediately instead of waiting for their daily schedule.
+
+Step 2 requires the repository secret `PACKAGES_TOKEN` — a token with **Actions: write**
+on those two repositories. Without it the release still succeeds; Homebrew/Scoop then
+update on their daily cron.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

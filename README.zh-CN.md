@@ -24,6 +24,7 @@
   - [6. 管道与非交互输出](#6-管道与非交互输出)
 - [选项](#选项)
 - [实测结果](#实测结果)
+- [发布流程（维护者）](#发布流程维护者)
 
 ---
 
@@ -213,3 +214,25 @@ CLI 文案（帮助、进度、错误）随系统语言自动切换：中文语�
 | jadx 1.5.0 | 90 | 988 | 含日期式版本 |
 
 </details>
+## 发布流程（维护者）
+
+```bash
+# 给 tag 写上有意义的描述——它就是这次发布的门面（`git tag -n` 可见）
+git tag -a v0.1.3 -m "v0.1.3: 修复 %20 版本识别; 找回仅含补丁的副版本族"
+git push origin v0.1.3
+```
+
+推送 tag 后，[发布工作流](.github/workflows/release.yml)会自动：
+
+1. 构建 6 个裁剪/UPX 压缩后的裸二进制并挂到 GitHub Release（发布说明自动生成）；
+2. 触发 [homebrew-tap](https://github.com/ejfkdev/homebrew-tap) 与
+   [scoop-bucket](https://github.com/ejfkdev/scoop-bucket) 的自动更新工作流，
+   让 `brew install ejfkdev/tap/ov` 与 `scoop install ov` 立刻拿到新版本，
+   不用等它们的每日定时任务。
+
+第 2 步需要仓库 secret `PACKAGES_TOKEN`（对这两个仓库有 **Actions: write** 权限的 token）；
+未配置时发版照常成功，Homebrew/Scoop 会在每日定时任务里更新。
+
+## 许可证
+
+MIT — 见 [LICENSE](LICENSE)。
