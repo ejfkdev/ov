@@ -111,6 +111,10 @@ func (p *Prober) detectVersions(rawURL string) []string {
 	if i := strings.IndexByte(pathStart, '?'); i >= 0 {
 		pathStart = pathStart[:i]
 	}
+	// 遮蔽 %XX 转义里的十六进制位, 防止版本正则把转义数字与后续版本粘连
+	// (如 …Setup%203.0.6.exe 误识别成 203.0.6)。长度与位置不变,
+	// 因此识别出的版本串仍能准确地在原 URL 中替换出模板。
+	pathStart = maskPctEscapes(pathStart)
 
 	var versions []string
 	// 文件名优先。
@@ -205,6 +209,31 @@ func isEnumeratable(v string) bool {
 		return false // yyyymmdd 等纯长数字不可枚举
 	}
 	return true
+}
+
+// maskPctEscapes 把 %XX 转义里的两个十六进制位替换为 '~'(长度不变)。
+// 版本号正则因此不会把转义里的数字同后面的版本串粘连;
+// '~' 不属于任何版本模式的字符集, 故匹配结果本身不受污染,
+// 且与原文逐位对应, 版本串可直接用于在原 URL 中做 {v} 模板替换。
+func maskPctEscapes(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	b := []byte(s)
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] != '%' {
+			continue
+		}
+		if isHexDigit(b[i+1]) && isHexDigit(b[i+2]) {
+			b[i+1], b[i+2] = '~', '~'
+			i += 2
+		}
+	}
+	return string(b)
+}
+
+func isHexDigit(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 // buildTemplate 把 rawURL 里所有版本串替换为 {v}(多个版本号同时修改)。

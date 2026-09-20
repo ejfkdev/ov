@@ -103,6 +103,8 @@ dates (2025.08.22), plain build numbers (754), alphanumeric mixes (3.0.2-arm64).
 Detections are deduplicated by "dottedness + order of appearance", and
 **every occurrence of the same version string in the URL is replaced at once**
 (useful for URLs like ZCode's, where the version appears twice).
+Percent-encoded escapes (`%20` …) act as delimiters during detection, so
+`…/MiniMax%20Agent%20Setup%203.0.6.exe` yields `3.0.6` (not `203.0.6`).
 
 ### 2. Non-traversable detection
 

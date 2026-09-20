@@ -388,9 +388,28 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 			lastFound = m
 		}
 	}
+	// pending 记录"已浅探(仅试 .0)但未命中、且还没补过深探"的副版本。
+	// 窗口预取按发射那一刻的 lastFound 判定深浅, 判定可能滞后; 这类副版本
+	// 若在消费时已与命中相邻、或随后被命中点覆盖, 需要补一轮 3 补丁深探——
+	// "只有 .1/.2、没有 .0"的补丁型家族只有这样才不会被漏(如 autoclaw 1.17.x)。
+	pending := map[int]bool{}
+	type reProbe struct {
+		mm int
+		c  chan bool
+	}
+	var reProbes []reProbe
+	queueDeep := func(j int) {
+		delete(pending, j)
+		c := make(chan bool, 1)
+		go func(j int) { c <- f.probeMinorExists(M, j) }(j)
+		reProbes = append(reProbes, reProbe{mm: j, c: c})
+	}
 	launch := func(mm int) *fut {
 		c := make(chan bool, 1)
 		deep := len(f.hi) >= 3 && (lastFound < 0 || mm-lastFound <= f.o.frontStop)
+		if !deep {
+			pending[mm] = true
+		}
 		go func() {
 			if deep {
 				c <- f.probeMinorExists(M, mm)
@@ -427,12 +446,25 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 		window = window[1:]
 		hit := <-fu.c
 		if hit {
+			delete(pending, fu.mm)
 			hits = append(hits, fu.mm)
 			if fu.mm > lastFound {
 				lastFound = fu.mm
 			}
 			miss = 0
+			// 命中点 ±frontStop 内此前浅探未中的副版本, 补一轮深探。
+			for d := -f.o.frontStop; d <= f.o.frontStop; d++ {
+				j := fu.mm + d
+				if j >= 0 && j <= hi && pending[j] {
+					queueDeep(j)
+				}
+			}
 		} else {
+			// 浅探时还不相邻、但此刻已与最新命中相邻 → 立即补深探
+			// (覆盖"补丁型家族紧跟在最后一个命中之后"的情形)。
+			if pending[fu.mm] && lastFound >= 0 && fu.mm-lastFound <= f.o.frontStop {
+				queueDeep(fu.mm)
+			}
 			miss++
 			if miss >= stop {
 				for _, w := range window { // 丢弃在途(自然完成)
@@ -441,6 +473,12 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 				window = nil
 				break
 			}
+		}
+	}
+	// 收齐补救深探(不计入连空截断, 只补发现)。
+	for _, rp := range reProbes {
+		if <-rp.c {
+			hits = append(hits, rp.mm)
 		}
 	}
 	return hits
