@@ -551,18 +551,35 @@ func runEnum(o *options, p *Prober, hc *http.Client, raw string) {
 	}
 	// 历史区主版本预扫: 先逐主版本试几个代表入口, 空主版本(如布局改版后
 	// 整段废弃的旧主版本)整段跳过稠密枚举 —— 高延迟网络上省下大量注定 404
-	// 的请求; 命中的代表入口仍会在随后的稠密枚举中再探一次, 不引入重复发现。
+	// 的请求。
 	if o.strategy == "smart" && len(anchor) > 0 && anchor[0] > from[0] {
-		liveMajors := prescanOldMajors(hc, o, tpl, widths, from[0], anchor[0], &probed)
+		liveMajors, prescanFound := prescanOldMajors(hc, o, tpl, widths, from[0], anchor[0], &probed)
 		filtered := make([]string, 0, len(candidates))
+		seen := make(map[string]bool, len(candidates))
 		for _, v := range candidates {
+			seen[v] = true
 			comp := parseSimple(v)
 			if len(comp) >= 1 && liveMajors[comp[0]] {
 				filtered = append(filtered, v)
 			}
 		}
+		// 预扫命中的入口是真实可下载版本, 必须并入候选走常规发现流程:
+		// 旧主版本可能整段只发布在高 minor/深补丁上(如 autoclaw 的 0.3.0 在
+		// major 0 的 minor 3), 这些位置不在按锚点上界生成的历史区里; 不记录
+		// 命中就会"主版本存活却没有任何已发现版本", 其历史从此不再展开。
+		added := 0
+		for _, v := range prescanFound {
+			if !seen[v] {
+				seen[v] = true
+				filtered = append(filtered, v)
+				added++
+			}
+		}
 		prerr(t("majorPrescanSummary"),
 			len(liveMajors), len(candidates), len(filtered))
+		if added > 0 {
+			prerr(t("majorPrescanFound"), added)
+		}
 		candidates = filtered
 	}
 	verifyJobs := make(chan verifyJob, 256)
@@ -817,39 +834,76 @@ func probeTemplateDiscover(hc *http.Client, o *options, tpl, v string) probeResu
 	return r
 }
 
-// majorPrescanProbe 预扫主版本 M 是否存在: 并发试 (M, 0..4, 0) 代表入口,
-// 任一命中即存在(早停)。真实产品每个主版本的首发几乎总在 minor 0..4。
-func majorPrescanProbe(hc *http.Client, o *options, tpl string, widths []int, M int) bool {
+// majorPrescanProbe 预扫主版本 M 是否存在: 并发试 (M, 0..4, 0) 代表入口
+// (真实产品每个主版本的首发几乎总在 minor 0..4)。
+// 返回是否存在, 以及命中的版本串——命中即真实可下载版本, 调用方须记录为已发现,
+// 否则"存活但入口都在高 minor/深补丁上"的旧主版本会没有任何种子, 历史无从展开。
+// deep=true 时, 代表入口全部落空后再加深一轮: 高 minor(5..20 逐值 + 稀疏远点)与
+// 深补丁(1..40 稀疏点)各撒一批——旧主版本可能整段只发布在这些位置。
+func majorPrescanProbe(hc *http.Client, o *options, tpl string, widths []int, M int, deep bool) (bool, []string) {
 	P := len(widths)
 	if P < 2 {
 		P = 2
 	}
-	res := make(chan bool, 5)
-	launched := 0
-	for m := 0; m <= 4; m++ {
-		comp := make([]int, P)
-		comp[0], comp[1] = M, m
-		v := joinCompsW(comp, widths)
-		launched++
-		go func(v string) {
-			res <- probeTemplateDiscover(hc, o, tpl, v).found
-		}(v)
+	probeEntries := func(pairs [][2]int) (bool, []string) {
+		type hit struct {
+			v     string
+			found bool
+		}
+		ch := make(chan hit, len(pairs))
+		for _, mp := range pairs {
+			comp := make([]int, P)
+			comp[0] = M
+			comp[1] = mp[0]
+			if P >= 3 {
+				comp[2] = mp[1]
+			}
+			v := joinCompsW(comp, widths)
+			go func(v string) {
+				ch <- hit{v, probeTemplateDiscover(hc, o, tpl, v).found}
+			}(v)
+		}
+		alive := false
+		var found []string
+		for range pairs {
+			h := <-ch
+			if h.found {
+				alive = true
+				found = append(found, h.v)
+			}
+		}
+		return alive, found
 	}
-	for i := 0; i < launched; i++ {
-		if <-res {
-			return true
+	alive, found := probeEntries([][2]int{{0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0}})
+	if alive || !deep {
+		return alive, found
+	}
+	deepEntries := [][2]int{}
+	for m := 5; m <= 20; m++ {
+		deepEntries = append(deepEntries, [2]int{m, 0})
+	}
+	for _, m := range []int{25, 30, 40, 50} {
+		deepEntries = append(deepEntries, [2]int{m, 0})
+	}
+	if P >= 3 {
+		for _, p := range []int{1, 2, 5, 10, 20, 40} {
+			deepEntries = append(deepEntries, [2]int{0, p})
 		}
 	}
-	return false
+	alive, found = probeEntries(deepEntries)
+	return alive, found
 }
 
 // prescanOldMajors 对 [fromMajor, anchorMajor) 的每个主版本做代表入口预扫,
-// 返回存在的主版本集合(恒含锚点主版本)。空主版本(布局改版后整段废弃的旧主版本)
-// 的稠密枚举被整段跳过——高延迟网络上省下大量注定 404 的请求。
-// 预扫失败方是开放的: 未及预扫的剩余主版本照常枚举, 不会漏发现。
+// 返回存在的主版本集合(恒含锚点主版本)与预扫命中的版本串。
+// 空主版本(布局改版后整段废弃的旧主版本)的稠密枚举被整段跳过——高延迟网络上
+// 省下大量注定 404 的请求。预扫失败方是开放的: 未及预扫的剩余主版本照常枚举。
+// 旧主版本数量不多时(<=12)做加深预扫(高 minor/深补丁), 覆盖"整段只发布在高
+// minor 或深补丁上"的旧主版本; 主版本很多时保持轻量预扫。
 func prescanOldMajors(hc *http.Client, o *options, tpl string, widths []int,
-	fromMajor, anchorMajor int, probed *atomic.Int64) map[int]bool {
+	fromMajor, anchorMajor int, probed *atomic.Int64) (map[int]bool, []string) {
 	live := map[int]bool{anchorMajor: true}
+	var found []string
 	var mu sync.Mutex
 	sem := make(chan struct{}, o.conc)
 	var wg sync.WaitGroup
@@ -857,6 +911,7 @@ func prescanOldMajors(hc *http.Client, o *options, tpl string, widths []int,
 	if anchorMajor-fromMajor > 48 {
 		fromMajor = anchorMajor - 48
 	}
+	deep := anchorMajor-fromMajor <= 12
 	for M := fromMajor; M < anchorMajor; M++ {
 		probed.Add(1)
 		sem <- struct{}{}
@@ -864,15 +919,16 @@ func prescanOldMajors(hc *http.Client, o *options, tpl string, widths []int,
 		go func(M int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if majorPrescanProbe(hc, o, tpl, widths, M) {
+			if alive, hits := majorPrescanProbe(hc, o, tpl, widths, M, deep); alive {
 				mu.Lock()
 				live[M] = true
+				found = append(found, hits...)
 				mu.Unlock()
 			}
 		}(M)
 	}
 	wg.Wait()
-	return live
+	return live, found
 }
 
 // probeURLWithRetry 带重试的探测(网络错误/429/5xx 重试)。
