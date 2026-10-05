@@ -393,6 +393,10 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 	// 若在消费时已与命中相邻、或随后被命中点覆盖, 需要补一轮 3 补丁深探——
 	// "只有 .1/.2、没有 .0"的补丁型家族只有这样才不会被漏(如 autoclaw 1.17.x)。
 	pending := map[int]bool{}
+	// missed 记录本轮被判定为空(浅探/深探均未命中)的副版本;
+	// tailProbed 保证每个副版本的补丁长尾探测至多做一次。
+	missed := map[int]bool{}
+	tailProbed := map[int]bool{}
 	type reProbe struct {
 		mm int
 		c  chan bool
@@ -459,7 +463,25 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 					queueDeep(j)
 				}
 			}
+			// 紧下方这个副版本若本轮被判为空, 它仍可能藏着补丁长尾
+			// (产品常见: N.0.33..74 长尾之后才切到 N.1.x), 用稀疏阶梯再探一遍
+			// 其补丁空间——命中则按新基座计入, 稠密填充会补全整段。
+			if len(f.hi) >= 3 && fu.mm-1 >= 0 && missed[fu.mm-1] && !tailProbed[fu.mm-1] {
+				tailProbed[fu.mm-1] = true
+				if f.probePatchTail(M, fu.mm-1) {
+					hits = append(hits, fu.mm-1)
+				}
+			}
 		} else {
+			// 已知副版本的紧下方(如 anchor 副版本在 skip 中, 其下第一个空位):
+			// .0/.1/.2 全空不代表没有补丁长尾, 用稀疏阶梯探一遍补丁空间。
+			if len(f.hi) >= 3 && skip[fu.mm+1] && !tailProbed[fu.mm] {
+				tailProbed[fu.mm] = true
+				if f.probePatchTail(M, fu.mm) {
+					hits = append(hits, fu.mm)
+				}
+			}
+			missed[fu.mm] = true
 			// 浅探时还不相邻、但此刻已与最新命中相邻 → 立即补深探
 			// (覆盖"补丁型家族紧跟在最后一个命中之后"的情形)。
 			if pending[fu.mm] && lastFound >= 0 && fu.mm-lastFound <= f.o.frontStop {
@@ -660,10 +682,40 @@ func (f *frontier) scanDown(anchor []int) {
 	f.sweep(func(v int) []int { return []int{v, 0, 0} }, rangeVals(anchor[0]+1, majorUpper, 1))
 }
 
-// scanDim 从 lo 起逐值探测维度 buildCand 直到 hi(含), 连续 front-stop 次未命中即停。
-// 已存在于 skip 集合的值视为命中且跳过探测(不重复探测、不累计 miss)。
-// 返回命中的取值升序列表。流水线并发: 至多 -c 个请求在途, 完成一个立即补下一个。
-func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]bool) []int {
+// patchLadderStep 补丁维度"阶梯扫尾"的步长: 任何长度 ≥step 的连续补丁号段必含一个
+// 阶梯点; 阶梯点命中后回探其下方 step-1 个补丁即可补齐段首。
+const patchLadderStep = 5
+
+// patchLadderBatch 阶梯/回探一次并发探测的点数。
+const patchLadderBatch = 8
+
+// patchTailReach 基座补丁填充时阶梯扫尾的额外纵深(超出该基座已知最大补丁的部分)。
+const patchTailReach = 30
+
+// patchFineTailHi 长尾探测的"近端细扫"上界: 该值以内每 patchLadderStep 个补丁探一个
+// (步长 5, 任何 ≥5 的连续段必被命中); 之外改为 4 倍步长粗扫(任何 ≥20 的连续段必被
+// 命中), 用更低成本覆盖远端长尾。
+const patchFineTailHi = 60
+
+// probeMany 并发探测一组候选, 返回每个候选是否命中
+// (命中记录/计数/进度由 probe 内部完成; 并发度由全局信号量约束)。
+func (f *frontier) probeMany(comps [][]int) []bool {
+	res := make([]bool, len(comps))
+	var wg sync.WaitGroup
+	for i, c := range comps {
+		wg.Add(1)
+		go func(i int, c []int) {
+			defer wg.Done()
+			res[i], _ = f.probe(c)
+		}(i, c)
+	}
+	wg.Wait()
+	return res
+}
+
+// scanDimStop 同 scanDim, 额外返回"下一个未探测取值": 稠密前沿被连空配额截断时,
+// 续扫应从该值开始(全部探完则为 hi+1)。供补丁维度的阶梯续扫使用。
+func (f *frontier) scanDimStop(buildCand func(int) []int, lo, hi int, skip map[int]bool) ([]int, int) {
 	// 先记录非 skip 候选的取值序列, 供结果回填。
 	var probeOrder []int
 	for x := lo; x <= hi; x++ {
@@ -696,7 +748,125 @@ func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]b
 		}
 	}
 	sort.Ints(hits)
+	next := hi + 1
+	if len(res) < len(probeOrder) {
+		next = probeOrder[len(res)]
+	}
+	return hits, next
+}
+
+// scanDim 从 lo 起逐值探测维度 buildCand 直到 hi(含), 连续 front-stop 次未命中即停。
+// 已存在于 skip 集合的值视为命中且跳过探测(不重复探测、不累计 miss)。
+// 返回命中的取值升序列表。流水线并发: 至多 -c 个请求在途, 完成一个立即补下一个。
+func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]bool) []int {
+	hits, _ := f.scanDimStop(buildCand, lo, hi, skip)
 	return hits
+}
+
+// scanPatches 补丁维度扫描: 稠密前沿(连空 front-stop 即停) + 稀疏阶梯扫尾续扫。
+// 真实产品的补丁号段常是长尾/稀疏分布(如 3.0.33..3.0.74 与锚点 3.1.1 之间有 12 个
+// 连空), 纯稠密扫描会在连空配额处停下, 永远够不到远处长尾。阶梯每 patchLadderStep
+// 个补丁探一个(任何 ≥step 的连续号段必被命中一点), 命中后回探段首(下方 step-1 个),
+// 再从命中点之上恢复稠密, 反复推进直到阶梯也扫不动为止。扫尾纵深为
+// max(lo, knownMax) + patchTailReach: knownMax 是该基座已发现的最大补丁
+// (含本轮之前由长尾探测/历史发现的), 避免在注定为空的远端白打请求。
+func (f *frontier) scanPatches(buildPatch func(int) []int, lo, hi int, skip map[int]bool, knownMax int) []int {
+	build := func(ps []int) [][]int {
+		out := make([][]int, 0, len(ps))
+		for _, p := range ps {
+			out = append(out, buildPatch(p))
+		}
+		return out
+	}
+	var hits []int
+	cur := lo
+	for cur <= hi && !f.isAborted() {
+		seg, next := f.scanDimStop(buildPatch, cur, hi, skip)
+		hits = append(hits, seg...)
+		if next > hi {
+			break
+		}
+		maxKnown := knownMax
+		if maxKnown < lo {
+			maxKnown = lo
+		}
+		for _, p := range hits {
+			if p > maxKnown {
+				maxKnown = p
+			}
+		}
+		ladderHi := maxKnown + patchTailReach
+		if ladderHi > hi {
+			ladderHi = hi
+		}
+		found := -1
+		for p := next; p <= ladderHi && found < 0; p += patchLadderStep * patchLadderBatch {
+			var pts []int
+			for q := p; q <= ladderHi && len(pts) < patchLadderBatch; q += patchLadderStep {
+				pts = append(pts, q)
+			}
+			for i, hit := range f.probeMany(build(pts)) {
+				if hit {
+					found = pts[i] // 批内取最靠前的命中
+					break
+				}
+			}
+		}
+		if found < 0 {
+			break
+		}
+		// 回探段首: found 下方最多 step-1 个补丁可能与它同段(命中记录由 probe 完成)。
+		var back []int
+		for q := found - 1; q >= lo && q > found-patchLadderStep; q-- {
+			back = append(back, q)
+		}
+		f.probeMany(build(back))
+		hits = append(hits, found)
+		cur = found + 1
+	}
+	return hits
+}
+
+// probePatchTail 用稀疏阶梯把一个基座的整个补丁空间扫一遍(每 patchLadderStep 个
+// 探一个), 任一命中即返回 true。用于"已知副版本紧下方"可能存在的补丁长尾——
+// 该副版本自身 .0/.1/.2 都不存在(被判为空), 但长尾往往真实存在(产品常见模式:
+// N.0.x 的 33..74 长尾之后才切到 N.1.x)。命中后调用方把该副版本计为命中,
+// 后续的稠密填充会补全整段。补丁 0..2 已被探过, 从 3 起跳。
+func (f *frontier) probePatchTail(M, mm int) bool {
+	P := len(f.hi)
+	hi := f.hi[2]
+	build := func(ps []int) [][]int {
+		out := make([][]int, 0, len(ps))
+		for _, p := range ps {
+			c := make([]int, P)
+			c[0], c[1], c[2] = M, mm, p
+			out = append(out, c)
+		}
+		return out
+	}
+	// 阶梯点: 近端每 patchLadderStep 个一点(任何 ≥5 的连续段必被命中),
+	// 远端起改用 4 倍步长(任何 ≥20 的连续段必被命中), 降低扫空成本。
+	var pts []int
+	for p := 3; p <= hi; {
+		pts = append(pts, p)
+		if p <= patchFineTailHi {
+			p += patchLadderStep
+		} else {
+			p += patchLadderStep * 4
+		}
+	}
+	for i := 0; i < len(pts); i += patchLadderBatch {
+		end := i + patchLadderBatch
+		if end > len(pts) {
+			end = len(pts)
+		}
+		for _, hit := range f.probeMany(build(pts[i:end])) {
+			if hit {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // computeHi 计算各维度前沿上界: 默认 universe; 锚点分量超过 universe
@@ -832,6 +1002,20 @@ func (f *frontier) scanMajor(M int, anchor []int, P int,
 		minorHits = []int{0}
 	}
 
+	// 各基座已发现的最大补丁快照(含本轮长尾探测/历史命中发现的), 供补丁填充的
+	// 阶梯扫尾定纵深——否则"刚被长尾探测发现较远补丁"的基座会因纵深不足而扫不到。
+	baseMaxPatch := map[[2]int]int{}
+	f.mu.Lock()
+	for v := range f.hits {
+		if c := parseSimple(v); len(c) >= 3 {
+			k := [2]int{c[0], c[1]}
+			if c[2] > baseMaxPatch[k] {
+				baseMaxPatch[k] = c[2]
+			}
+		}
+	}
+	f.mu.Unlock()
+
 	for _, mm := range minorHits {
 		if f.isAborted() {
 			return
@@ -853,12 +1037,13 @@ func (f *frontier) scanMajor(M int, anchor []int, P int,
 		if isAnchorBase {
 			lo = anchor[2] + 1 // 锚点基座从已知补丁+1 起, 找更新的补丁
 		}
+		knownMax := baseMaxPatch[[2]int{M, mm}]
 		buildPatch := func(pz int) []int {
 			c := make([]int, P)
 			c[0], c[1], c[2] = M, mm, pz
 			return c
 		}
-		f.scanDim(buildPatch, lo, f.hi[2], pSet)
+		f.scanPatches(buildPatch, lo, f.hi[2], pSet, knownMax)
 	}
 }
 

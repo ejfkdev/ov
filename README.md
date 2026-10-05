@@ -152,7 +152,12 @@ majors (e.g. 3.0.0).
 **Frontier region** (> known version): grows dimension by dimension — the major
 frontier stops after 5 consecutive misses, the minor frontier likewise, and patch
 exploration fills patches linearly until consecutive misses (patch ranges are
-usually dense). Total requests are hard-capped (default 500000).
+usually dense). Because real patch series are often sparse long tails (e.g.
+`3.0.33…3.0.74` followed by `3.1.0`), patch exploration continues past the dense
+stop with a sparse ladder (one probe every 5 patches, densified again on a hit),
+and a minor directly below a known one is swept for a patch tail even when its
+`.0/.1/.2` are absent — so any known version anchors the same complete result set.
+Total requests are hard-capped (default 500000).
 
 **Rolling window**: triggered automatically when the candidate space is too large
 (e.g. a single big number like 72203); it stops after 200 consecutive misses
