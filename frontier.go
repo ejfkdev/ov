@@ -28,6 +28,7 @@ type frontier struct {
 	ua        string
 	widths    []int           // 组件宽度(保持 2025.08.22 式前导零)
 	hi        []int           // 每维度上界(universe 或显式 -to)
+	anchor    []int           // 锚点版本(run() 设置): 用于判定"旧主版本"以放宽后向扫描
 	seeds     map[string]bool // 历史命中版本(播种已知主/次/补丁)
 	hits      map[string]probeResult
 	probed    *atomic.Int64
@@ -316,12 +317,13 @@ func (f *frontier) sparseMinorProbe(M int, knownMinors map[int]bool) []int {
 	return out
 }
 
-// probeMinorExists 探测 (M, mm) 基座是否存在: 并发试补丁 0/1/2, 任一命中即存在(早停,
-// 其余在途探测自然完成, 不等待)。这样"只有 .1/.2 补丁、没有 .0 基座"的副版本也能被发现。
-// 并发发射避免慢速网络下 3 次顺序探测串成 3 倍延迟。2 分量版本无补丁维度, 只探一次。
+// probeMinorExists 探测 (M, mm) 基座是否存在: 并发试补丁 0..patchProbeHead, 任一命中
+// 即存在(其余在途探测自然完成)。这样"只有 .1/.2 补丁、没有 .0 基座"的副版本能被发现,
+// 靠前的补丁盲区(如整段只发布了 .5/.6/.7 这类低补丁孤岛——最古老的版本常落在这里)
+// 也一并覆盖。并发发射避免慢速网络下顺序探测串成 N 倍延迟。2 分量版本无补丁维度。
 func (f *frontier) probeMinorExists(M, mm int) bool {
 	P := len(f.hi)
-	maxPatch := 2
+	maxPatch := patchProbeHead
 	if P < 3 {
 		maxPatch = 0
 	}
@@ -365,6 +367,8 @@ func (f *frontier) scanMinorsPatchAware(M int, skip map[int]bool) []int {
 		return nil
 	}
 	hi := f.hi[1]
+	// 旧主版本(M < 锚点主版本)的版本史更稀疏, 连空配额放宽一倍: 后向要把
+	// 最古老的版本也捞回来, 不能像前向那样一见空档就收手。
 	stop := f.o.frontStop * 3
 	limit := f.o.conc
 	if limit < 1 {
@@ -682,6 +686,11 @@ func (f *frontier) scanDown(anchor []int) {
 	f.sweep(func(v int) []int { return []int{v, 0, 0} }, rangeVals(anchor[0]+1, majorUpper, 1))
 }
 
+// patchProbeHead 副版本存在性深探时"密集头部"的补丁上界: 0..该值逐个探测。
+// 低补丁孤岛(整段只有 .3.. 这类靠前补丁)常见于最古老的版本, 只试 0/1/2 会漏;
+// 但每个深探副版本都要付这个开销, 取值刻意克制(更深的孤岛由上方的阶梯扫尾负责)。
+const patchProbeHead = 5
+
 // patchLadderStep 补丁维度"阶梯扫尾"的步长: 任何长度 ≥step 的连续补丁号段必含一个
 // 阶梯点; 阶梯点命中后回探其下方 step-1 个补丁即可补齐段首。
 const patchLadderStep = 5
@@ -696,6 +705,34 @@ const patchTailReach = 30
 // (步长 5, 任何 ≥5 的连续段必被命中); 之外改为 4 倍步长粗扫(任何 ≥20 的连续段必被
 // 命中), 用更低成本覆盖远端长尾。
 const patchFineTailHi = 60
+
+// patchLadderPoints 生成从 from 到 hi 的阶梯探测点:
+// 先密集扫 [from, patchProbeHead](低补丁孤岛=最古老版本常落此), 之后每
+// patchLadderStep 个一点(任何 ≥step 的连续号段必被命中一点); coarseBeyond 时,
+// 超过 patchFineTailHi 的远端改用 4 倍步长, 以更低成本覆盖远端长尾。
+func patchLadderPoints(from, hi int, coarseBeyond bool) []int {
+	var pts []int
+	head := patchProbeHead
+	if head > hi {
+		head = hi
+	}
+	for p := from; p <= head; p++ {
+		pts = append(pts, p)
+	}
+	p := patchLadderStep * ((head / patchLadderStep) + 1)
+	if p < from {
+		p = ((from + patchLadderStep - 1) / patchLadderStep) * patchLadderStep
+	}
+	for p <= hi {
+		pts = append(pts, p)
+		if coarseBeyond && p > patchFineTailHi {
+			p += patchLadderStep * 4
+		} else {
+			p += patchLadderStep
+		}
+	}
+	return pts
+}
 
 // probeMany 并发探测一组候选, 返回每个候选是否命中
 // (命中记录/计数/进度由 probe 内部完成; 并发度由全局信号量约束)。
@@ -770,7 +807,7 @@ func (f *frontier) scanDim(buildCand func(int) []int, lo, hi int, skip map[int]b
 // 再从命中点之上恢复稠密, 反复推进直到阶梯也扫不动为止。扫尾纵深为
 // max(lo, knownMax) + patchTailReach: knownMax 是该基座已发现的最大补丁
 // (含本轮之前由长尾探测/历史发现的), 避免在注定为空的远端白打请求。
-func (f *frontier) scanPatches(buildPatch func(int) []int, lo, hi int, skip map[int]bool, knownMax int) []int {
+func (f *frontier) scanPatches(buildPatch func(int) []int, lo, hi int, skip map[int]bool, knownMax, reach int) []int {
 	build := func(ps []int) [][]int {
 		out := make([][]int, 0, len(ps))
 		for _, p := range ps {
@@ -795,19 +832,21 @@ func (f *frontier) scanPatches(buildPatch func(int) []int, lo, hi int, skip map[
 				maxKnown = p
 			}
 		}
-		ladderHi := maxKnown + patchTailReach
+		ladderHi := maxKnown + reach
 		if ladderHi > hi {
 			ladderHi = hi
 		}
+		// 阶梯: 低补丁密集头部 + 每 patchLadderStep 个一点(精度优先, 不用粗扫)。
+		ladder := patchLadderPoints(next, ladderHi, false)
 		found := -1
-		for p := next; p <= ladderHi && found < 0; p += patchLadderStep * patchLadderBatch {
-			var pts []int
-			for q := p; q <= ladderHi && len(pts) < patchLadderBatch; q += patchLadderStep {
-				pts = append(pts, q)
+		for i := 0; i < len(ladder) && found < 0; i += patchLadderBatch {
+			end := i + patchLadderBatch
+			if end > len(ladder) {
+				end = len(ladder)
 			}
-			for i, hit := range f.probeMany(build(pts)) {
+			for j, hit := range f.probeMany(build(ladder[i:end])) {
 				if hit {
-					found = pts[i] // 批内取最靠前的命中
+					found = ladder[i+j] // 批内取最靠前的命中
 					break
 				}
 			}
@@ -829,9 +868,9 @@ func (f *frontier) scanPatches(buildPatch func(int) []int, lo, hi int, skip map[
 
 // probePatchTail 用稀疏阶梯把一个基座的整个补丁空间扫一遍(每 patchLadderStep 个
 // 探一个), 任一命中即返回 true。用于"已知副版本紧下方"可能存在的补丁长尾——
-// 该副版本自身 .0/.1/.2 都不存在(被判为空), 但长尾往往真实存在(产品常见模式:
-// N.0.x 的 33..74 长尾之后才切到 N.1.x)。命中后调用方把该副版本计为命中,
-// 后续的稠密填充会补全整段。补丁 0..2 已被探过, 从 3 起跳。
+// 该副版本自身低补丁都不存在(被判为空), 但长尾往往真实存在(产品常见模式:
+// N.0.x 的 33..74 长尾之后才切到 N.1.x; 或最古老的版本是 .5/.6 这类低补丁孤岛)。
+// 命中后调用方把该副版本计为命中, 后续的稠密填充会补全整段。
 func (f *frontier) probePatchTail(M, mm int) bool {
 	P := len(f.hi)
 	hi := f.hi[2]
@@ -844,17 +883,8 @@ func (f *frontier) probePatchTail(M, mm int) bool {
 		}
 		return out
 	}
-	// 阶梯点: 近端每 patchLadderStep 个一点(任何 ≥5 的连续段必被命中),
-	// 远端起改用 4 倍步长(任何 ≥20 的连续段必被命中), 降低扫空成本。
-	var pts []int
-	for p := 3; p <= hi; {
-		pts = append(pts, p)
-		if p <= patchFineTailHi {
-			p += patchLadderStep
-		} else {
-			p += patchLadderStep * 4
-		}
-	}
+	// 阶梯点: 低补丁密集头部 + 每 patchLadderStep 个一点(远端 4 倍步长)。
+	pts := patchLadderPoints(3, hi, true)
 	for i := 0; i < len(pts); i += patchLadderBatch {
 		end := i + patchLadderBatch
 		if end > len(pts) {
@@ -897,6 +927,7 @@ func (f *frontier) run(anchor []int) {
 		return
 	}
 	f.hi = computeHi(anchor, f.o)
+	f.anchor = anchor
 	majors, minors, patches := parseSeeds(f.seeds, P)
 
 	// ---- 主版本前沿: (M,0,0,..) ----
@@ -1037,13 +1068,16 @@ func (f *frontier) scanMajor(M int, anchor []int, P int,
 		if isAnchorBase {
 			lo = anchor[2] + 1 // 锚点基座从已知补丁+1 起, 找更新的补丁
 		}
+		// 补丁阶梯纵深: maxKnown 已包含预扫深补丁点/长尾探测发现的远补丁,
+		// 因此远长尾由"预扫播种 + 纵深外推"覆盖, 无需给旧主版本额外放大纵深。
 		knownMax := baseMaxPatch[[2]int{M, mm}]
+		reach := patchTailReach
 		buildPatch := func(pz int) []int {
 			c := make([]int, P)
 			c[0], c[1], c[2] = M, mm, pz
 			return c
 		}
-		f.scanPatches(buildPatch, lo, f.hi[2], pSet, knownMax)
+		f.scanPatches(buildPatch, lo, f.hi[2], pSet, knownMax, reach)
 	}
 }
 

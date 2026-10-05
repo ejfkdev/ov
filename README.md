@@ -156,7 +156,12 @@ usually dense). Because real patch series are often sparse long tails (e.g.
 `3.0.33…3.0.74` followed by `3.1.0`), patch exploration continues past the dense
 stop with a sparse ladder (one probe every 5 patches, densified again on a hit),
 and a minor directly below a known one is swept for a patch tail even when its
-`.0/.1/.2` are absent — so any known version anchors the same complete result set.
+low patches are absent — so any known version anchors the same complete result set.
+Backward (older-version) discovery is deliberately more lenient than the forward
+direction: since people usually feed the newest release and want the whole history,
+old majors get extra representative entries (high minors, deep patches), their
+low-patch head is probed densely (old versions often start at e.g. `.4`), and
+patch tails are swept even when everything below them has been deleted.
 Total requests are hard-capped (default 500000).
 
 **Rolling window**: triggered automatically when the candidate space is too large

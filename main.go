@@ -874,21 +874,26 @@ func majorPrescanProbe(hc *http.Client, o *options, tpl string, widths []int, M 
 		}
 		return alive, found
 	}
-	alive, found := probeEntries([][2]int{{0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0}})
+	// 代表入口: minor 0..4 的首发点; 再加上 minor 0 上的稀疏深补丁点——旧主版本
+	// 的"远处补丁长尾"(如 1.0.40.. 而 1.0.1..39 已删)只有靠这些点播种, 后续
+	// 稠密填充才能顺着纵深把整段补回来。对存活主版本只多 5 次探测, 代价很小。
+	entries := [][2]int{{0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0}}
+	if P >= 3 {
+		for _, p := range []int{5, 10, 20, 40, 80} {
+			entries = append(entries, [2]int{0, p})
+		}
+	}
+	alive, found := probeEntries(entries)
 	if alive || !deep {
 		return alive, found
 	}
 	deepEntries := [][2]int{}
-	for m := 5; m <= 20; m++ {
+	// 高副版本: 5..30 逐值, 之后 35..100 稀疏点(旧主版本可能整段只发布在高副版本上)。
+	for m := 5; m <= 30; m++ {
 		deepEntries = append(deepEntries, [2]int{m, 0})
 	}
-	for _, m := range []int{25, 30, 40, 50} {
+	for _, m := range []int{35, 40, 50, 60, 80, 100} {
 		deepEntries = append(deepEntries, [2]int{m, 0})
-	}
-	if P >= 3 {
-		for _, p := range []int{1, 2, 5, 10, 20, 40} {
-			deepEntries = append(deepEntries, [2]int{0, p})
-		}
 	}
 	alive, found = probeEntries(deepEntries)
 	return alive, found
