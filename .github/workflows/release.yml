@@ -67,6 +67,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout (读取 tag 描述)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -76,10 +82,31 @@ jobs:
       - name: List binaries
         run: ls -lah dist/
 
+      # 发布说明 = tag 的 annotated 描述(与 ddc 的发布方式一致):
+      # 脚本/手工打 tag 时写的描述就是这次发布的门面; 末尾附上一版本以来的
+      # Full Changelog 链接。tag 没写描述时交给 action 自动生成。
+      - name: Read tag annotation
+        id: tagmsg
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          prev=$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || true)
+          {
+            printf '%s\n\n%s\n' \
+              "$(git tag -l --format='%(contents:subject)' "$tag")" \
+              "$(git tag -l --format='%(contents:body)' "$tag")"
+            if [ -n "$prev" ]; then
+              printf '\n**Full Changelog**: %s/%s/compare/%s...%s\n' \
+                "${{ github.server_url }}" "${{ github.repository }}" "$prev" "$tag"
+            fi
+          } > release_body.md
+          cat release_body.md
+
       - name: Upload release assets (裸二进制, 不再打包)
         uses: softprops/action-gh-release@v3
         with:
           files: dist/ov-*
+          body_path: release_body.md
           generate_release_notes: true
 
   # brew/scoop 的即时更新由本地 scripts/release.sh 在 CI 出产物后触发
